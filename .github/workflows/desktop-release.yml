@@ -30,7 +30,7 @@ jobs:
       DSH_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Check out the release commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
