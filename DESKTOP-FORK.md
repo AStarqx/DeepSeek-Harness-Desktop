@@ -39,7 +39,7 @@ Files this fork owns are the ones upstream may also change, so a conflict is exp
 
 ## The update channel
 
-`DSH_DESKTOP_AUTO_UPDATE_ENV=github` selects repository-hosted releases and `DSH_DESKTOP_UPDATE_REPOSITORY=<owner>/<name>` names the repository, so a build carries updater configuration without DeepSeek's COS account or a code-signing identity. The packaged `resources/app-update.yml` then names the provider, and the released channel metadata — `latest.yml`, or `rc.yml` for a version such as `0.1.6-rc.1` — carries the artifact digests for that release. The packaging scripts refuse the GitHub deployment when they are asked for a COS upload destination.
+`DSH_DESKTOP_AUTO_UPDATE_ENV=github` selects repository-hosted releases and `DSH_DESKTOP_UPDATE_REPOSITORY=<owner>/<name>` names the repository, so a build carries updater configuration without DeepSeek's COS account or a code-signing identity. The packaged `resources/app-update.yml` then names the provider, and the release carries electron-builder's channel metadata — `latest.yml` — with the artifact digests the updater verifies. The packaging scripts refuse the GitHub deployment when they are asked for a COS upload destination.
 
 Users must install one build from this repository before updates reach them: builds published by DeepSeek check DeepSeek's own release stream, so those installations never see these releases.
 
@@ -48,7 +48,8 @@ Users must install one build from this repository before updates reach them: bui
 - Windows installers built here are unsigned, so SmartScreen warns on the first install and some users may need to allow the application.
 - Automatic installation replaces an NSIS-installed application. A portable copy can check, download, and be updated by hand; `desktop-release\更新到新版.cmd` mirrors a new build over a portable copy without running the installer.
 - Keep `DSH_DESKTOP_APP_ID` fixed across releases. It names the installed application, its shortcuts, and the updater cache; changing it installs a second application instead of upgrading this one.
-- A prerelease version publishes as a GitHub prerelease. Installed applications on the same version channel find it; stable versions publish as the latest release and use `latest.yml`.
+- A prerelease version (for example `0.1.6-rc.1`) is published as a GitHub prerelease; only installations whose own version is a prerelease accept it. A stable version publishes as the latest release and reaches every installation. Prefer stable versions for updates all users should receive.
+- The repository is private by default. A private repository cannot serve update downloads to other people, and its Actions minutes are billed: make it public before the first release.
 
 ## Upstream workflows
 

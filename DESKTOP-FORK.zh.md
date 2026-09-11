@@ -39,7 +39,7 @@
 
 ## 更新通道
 
-`DSH_DESKTOP_AUTO_UPDATE_ENV=github` 选择由本仓库托管发行版，`DSH_DESKTOP_UPDATE_REPOSITORY=<owner>/<name>` 指定仓库名；这样构建产物无需 DeepSeek 的 COS 账号，也不需要代码签名身份即可带上更新配置。打包进应用的 `resources/app-update.yml` 会写明 provider，而随发行版上传的通道元数据——稳定版为 `latest.yml`，`0.1.6-rc.1` 这类预发布版为 `rc.yml`——记录该版本的产物摘要。打包脚本在被要求提供 COS 上传目标时会拒绝 GitHub 部署。
+`DSH_DESKTOP_AUTO_UPDATE_ENV=github` 选择由本仓库托管发行版，`DSH_DESKTOP_UPDATE_REPOSITORY=<owner>/<name>` 指定仓库名；这样构建产物无需 DeepSeek 的 COS 账号，也不需要代码签名身份即可带上更新配置。打包进应用的 `resources/app-update.yml` 会写明 provider，随发行版上传的 electron-builder 通道元数据 `latest.yml` 记录更新程序校验用的产物摘要。打包脚本在被要求提供 COS 上传目标时会拒绝 GitHub 部署。
 
 用户需要先安装一次本仓库构建的版本：DeepSeek 官方发布的版本检查的是 DeepSeek 自己的发行流，因此那些安装永远看不到这里的更新。
 
@@ -48,7 +48,8 @@
 - 这里构建的 Windows 安装包未签名，首次安装时 SmartScreen 会给出警告，部分用户需要手动允许运行。
 - 自动安装针对的是 NSIS 安装版。免安装版仍可检查、下载，并用脚本手动更新：`desktop-release\更新到新版.cmd` 会把新构建镜像覆盖到免安装目录，无需运行安装程序。
 - `DSH_DESKTOP_APP_ID` 必须保持不变：它决定已安装应用的身份、快捷方式与更新缓存目录；一旦改变，等于安装出第二个应用而不是升级现有应用。
-- 预发布版本会发布为 GitHub prerelease，处于同一版本通道的已安装应用能找到它；稳定版本发布为 latest release 并使用 `latest.yml`。
+- 预发布版本（例如 `0.1.6-rc.1`）会发布为 GitHub prerelease，只有自身版本也是预发布的安装才能接受它；稳定版本发布为 latest release，能触达所有安装。要给全部用户推更新时请使用稳定版本号。
+- 仓库默认是私有的。私有仓库无法让别人下载更新，其 Actions 分钟数也要计费；首次发版前请先把它设为公开。
 
 ## 上游自带的 GitHub Actions
 
