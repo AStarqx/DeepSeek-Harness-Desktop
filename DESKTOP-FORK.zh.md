@@ -32,8 +32,8 @@
 
 ## 发布一次桌面版更新
 
-1. 同时提升根 `package.json` 与 `apps/desktop/package.json` 的版本号；两者不一致时打包会直接失败。
-2. 给发布提交打标签并推送：`git tag desktop-v<版本号>`、`git push fork desktop-v<版本号>`。
+1. 用共享的 dsh 版本号提升版本，它会同时改写根清单、`apps/desktop/package.json` 与锁文件，并提交这次提升：`pnpm run release:dsh -- 0.1.6`。两份清单版本不一致时打包会直接失败。
+2. 给发布提交打标签并推送：`git tag desktop-v0.1.6`、`git push fork desktop-v0.1.6`。
 3. [`.github/workflows/desktop-release.yml`](.github/workflows/desktop-release.yml) 会在 Windows runner 上构建 unsigned Windows 目标，并把安装包、其 blockmap 与通道元数据附到标签对应的 GitHub Release 上。
 4. 已安装的桌面版会在主窗口打开十秒后检查该发行流，也可以在 **应用 → 检查更新…** 手动触发；确认后应用会下载并安装。
 

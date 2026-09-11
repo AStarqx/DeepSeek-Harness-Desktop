@@ -32,8 +32,8 @@ Files this fork owns are the ones upstream may also change, so a conflict is exp
 
 ## Release a Desktop update
 
-1. Bump the version in the root `package.json` and in `apps/desktop/package.json`; packaging rejects a mismatch between them.
-2. Tag the release commit and push the tag: `git tag desktop-v<version>` and `git push fork desktop-v<version>`.
+1. Bump the shared dsh version, which rewrites the root manifest, `apps/desktop/package.json`, and the lockfile, and commits the bump: `pnpm run release:dsh -- 0.1.6`. Packaging rejects a mismatch between the two manifests.
+2. Tag the release commit and push the tag: `git tag desktop-v0.1.6` and `git push fork desktop-v0.1.6`.
 3. [`.github/workflows/desktop-release.yml`](.github/workflows/desktop-release.yml) builds the unsigned Windows target on a Windows runner and attaches the installer, its blockmap, and the channel metadata to a GitHub release whose tag matches the packaged version.
 4. An installed application checks that release ten seconds after its main window opens, and on demand from **应用 → 检查更新…**. Accepting the prompt downloads and installs the release.
 

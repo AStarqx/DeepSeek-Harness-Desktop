@@ -28,9 +28,6 @@ jobs:
       DSH_DESKTOP_APP_ID: com.astarqx.deepseek-harness-desktop
       DSH_DESKTOP_AUTO_UPDATE_ENV: github
       DSH_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
-      # Electron and its NSIS toolchain download from GitHub releases, which is slow on some runners.
-      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     steps:
       - name: Check out the release commit
         uses: actions/checkout@v4
