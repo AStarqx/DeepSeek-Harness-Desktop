@@ -1,0 +1,92 @@
+# Builds and publishes one Windows Desktop release so installed applications can update themselves.
+name: Desktop release
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create, for example desktop-v0.1.6; it must match the Desktop version.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  windows-x64:
+    # The packaged runtime, the installer, and its update metadata are all produced on Windows.
+    runs-on: windows-latest
+    env:
+      # The application identity keeps installs, shortcuts, and the updater cache stable across
+      # releases. Changing it installs a second application instead of upgrading this one.
+      DSH_DESKTOP_APP_ID: com.astarqx.deepseek-harness-desktop
+      DSH_DESKTOP_AUTO_UPDATE_ENV: github
+      DSH_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+      # Electron and its NSIS toolchain download from GitHub releases, which is slow on some runners.
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve the release version
+        id: release
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          $tag = '${{ github.event.inputs.tag }}'
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = '${{ github.ref_name }}' }
+          if ($tag -ne "desktop-v$version") {
+            throw "release tag $tag does not match the Desktop version $version in apps/desktop/package.json"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Package the unsigned Windows target
+        run: pnpm run package:desktop:win:x64:unsigned
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ steps.release.outputs.tag }}'
+          $version = '${{ steps.release.outputs.version }}'
+          $artifacts = 'apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          # The updater reads the channel metadata (latest.yml, or rc.yml for a prerelease) beside
+          # the installer in the release assets. builder-debug.yml is not part of the release.
+          $files = @(Get-ChildItem $artifacts -File | Where-Object {
+            $_.Name -ne 'builder-debug.yml' -and $_.Extension -in @('.exe', '.blockmap', '.yml')
+          })
+          if ($files.Count -eq 0) { throw "no release artifacts were found in $artifacts" }
+          $files | ForEach-Object { Write-Host "artifact: $($_.Name)" }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $files.FullName --repo $env:GITHUB_REPOSITORY --clobber
+          }
+          else {
+            $prerelease = if ($version -match '-') { '--prerelease' } else { '--latest' }
+            gh release create $tag $files.FullName --repo $env:GITHUB_REPOSITORY `
+              --title "DeepSeek Harness Desktop $version" --generate-notes $prerelease
+          }

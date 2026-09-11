@@ -1,6 +1,7 @@
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
 import { readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -11,6 +12,7 @@ import {
   Menu,
   protocol,
   type IpcMainInvokeEvent,
+  type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
 import { DesktopProjectManager, type DesktopProjectHooks } from './project-manager.ts'
@@ -22,6 +24,13 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { desktopErrorState } from './startup-error.ts'
 import { startupFailureDocument } from './startup-document.ts'
+import {
+  DESKTOP_TITLE_BAR_OVERLAY_COLOR,
+  desktopMenuAnchor,
+  desktopOwnsWindowChrome,
+  desktopSymbolColor,
+  desktopTitleBarChrome,
+} from './titlebar.ts'
 
 const SCHEME = 'dsh-app'
 let focusPrimaryWindow = (): void => {}
@@ -87,13 +96,25 @@ function developmentHostInspectPort(enabled: boolean): number | undefined {
   return port
 }
 
+/** Whether the shell owns the window chrome and carries the application menu in its own title bar. */
+const ownsWindowChrome = desktopOwnsWindowChrome(process.platform)
+
+/** Absolute path of the window icon shipped in the shell's renderer assets. */
+function desktopWindowIcon(): string | undefined {
+  const path = join(app.getAppPath(), 'renderer', 'app-icon.png')
+  return existsSync(path) ? path : undefined
+}
+
 function createWindow(preload: string, show = false): BrowserWindow {
+  const icon = desktopWindowIcon()
   const window = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 880,
     minHeight: 600,
     show,
+    ...(icon === undefined ? {} : { icon }),
+    ...(ownsWindowChrome ? desktopTitleBarChrome() : {}),
     webPreferences: {
       preload,
       nodeIntegration: false,
@@ -312,7 +333,7 @@ async function main(): Promise<void> {
     }
   }
   ipcMain.handle(DESKTOP_IPC.localeGet, (event) => {
-    assertDesktopSender(event, ['shell'])
+    assertDesktopSender(event, ['shell', 'app'])
     return locale
   })
   ipcMain.handle(DESKTOP_IPC.pluginsList, (event) => {
@@ -434,25 +455,52 @@ async function main(): Promise<void> {
     void pluginWindow.loadURL(`${SCHEME}://shell/plugin-manager.html`)
   }
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate([{
-    label: process.platform === 'darwin' ? app.name : messages.application,
-    submenu: [
-      {
-        label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
-        accelerator: 'CmdOrCtrl+,',
-        enabled: development === undefined,
-        click: openPluginWindow,
-      },
-      { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
-      { type: 'separator' },
-      { role: 'quit' },
-    ],
-  }]))
+  const applicationMenuItems: MenuItemConstructorOptions[] = [
+    {
+      label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
+      accelerator: 'CmdOrCtrl+,',
+      enabled: development === undefined,
+      click: openPluginWindow,
+    },
+    { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+    { type: 'separator' },
+    { role: 'quit' },
+  ]
+  const applicationMenu = Menu.buildFromTemplate(applicationMenuItems)
+  // macOS keeps the application menu in the system menu bar. Other platforms show it from the
+  // window's own title bar, where a native menu bar would occupy a second chrome row.
+  Menu.setApplicationMenu(ownsWindowChrome
+    ? null
+    : Menu.buildFromTemplate([{ label: app.name, submenu: applicationMenuItems }]))
+
+  ipcMain.handle(DESKTOP_IPC.applicationMenuOpen, (event, anchor: unknown) => {
+    assertDesktopSender(event, ['shell', 'app'])
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (window === null) throw new Error('dsh desktop: application menu requires an owned window')
+    const position = desktopMenuAnchor(anchor)
+    applicationMenu.popup({ window, x: position.x, y: position.y })
+  })
+  ipcMain.handle(DESKTOP_IPC.titleBarSymbolColor, (event, color: unknown) => {
+    assertDesktopSender(event, ['shell', 'app'])
+    const symbolColor = desktopSymbolColor(color)
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!ownsWindowChrome || window === null) return
+    window.setTitleBarOverlay({ color: DESKTOP_TITLE_BAR_OVERLAY_COLOR, symbolColor })
+  })
 
   const createMainWindow = (): BrowserWindow => {
     const window = createWindow(appPreload, true)
     mainWindow = window
     window.on('closed', () => { if (mainWindow === window) mainWindow = undefined })
+    // The system menu bar owns this accelerator on macOS; the shell window re-creates it where the
+    // application menu moved into the window's own title bar.
+    if (ownsWindowChrome && development === undefined) {
+      window.webContents.on('before-input-event', (event, input) => {
+        if (input.type !== 'keyDown' || !input.control || input.shift || input.alt || input.key !== ',') return
+        event.preventDefault()
+        openPluginWindow()
+      })
+    }
     window.webContents.on('preload-error', (_event, _path, error) => {
       void showEmergencyError(error).catch((failure: unknown) => { console.error(failure) })
     })

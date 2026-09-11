@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   desktopBuildRecordFilename,
   desktopUpdateMetadataFilename,
+  desktopUsesRepositoryUpdates,
   resolveDesktopAutoUpdateConfig,
   resolveDesktopAutoUpdateEnvironment,
   resolveDesktopAutoUpdateTarget,
@@ -19,6 +20,7 @@ describe('desktop auto-update environment', () => {
       origin: 'https://desktop-updates.example.com',
       publicUrl: 'https://desktop-updates.example.com/_/harness/desktop/stable/mac-arm64/',
       keyPrefix: '_/harness/desktop/stable/mac-arm64',
+      publish: { provider: 'generic', url: 'https://desktop-updates.example.com/_/harness/desktop/stable/mac-arm64/' },
     })
     expect(resolveDesktopUploadConfig({
       DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com/',
@@ -74,9 +76,38 @@ describe('desktop auto-update environment', () => {
   it('rejects unknown deployments and targets', () => {
     expect(() => resolveDesktopAutoUpdateEnvironment({
       DSH_DESKTOP_AUTO_UPDATE_ENV: 'staging',
-    })).toThrow(/test.*production/u)
+    })).toThrow(/test.*production.*github/u)
     expect(() => resolveDesktopAutoUpdateTarget('linux', 'x64')).toThrow(/unsupported target/u)
     expect(() => desktopBuildRecordFilename('linux-x64' as 'mac-arm64')).toThrow(/unsupported target/u)
+  })
+
+  it('resolves the repository releases deployment', () => {
+    const environment = {
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'github',
+      DSH_DESKTOP_UPDATE_REPOSITORY: 'AStarqx/DeepSeek-Harness-Desktop',
+    }
+    expect(desktopUsesRepositoryUpdates(environment)).toBe(true)
+    expect(desktopUsesRepositoryUpdates({})).toBe(false)
+    expect(resolveDesktopAutoUpdateConfig(environment, 'win32', 'x64')).toEqual({
+      environment: 'github',
+      target: 'win-x64',
+      publish: { provider: 'github', owner: 'AStarqx', repo: 'DeepSeek-Harness-Desktop' },
+      publicUrl: 'https://github.com/AStarqx/DeepSeek-Harness-Desktop/releases/latest/download/',
+    })
+  })
+
+  it('requires a repository for the repository releases deployment', () => {
+    expect(() => resolveDesktopAutoUpdateConfig({
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'github',
+    }, 'win32', 'x64')).toThrow(/DSH_DESKTOP_UPDATE_REPOSITORY/u)
+    expect(() => resolveDesktopAutoUpdateConfig({
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'github',
+      DSH_DESKTOP_UPDATE_REPOSITORY: 'DeepSeek-Harness-Desktop',
+    }, 'win32', 'x64')).toThrow(/owner\/name GitHub repository/u)
+    expect(() => resolveDesktopUploadConfig({
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'github',
+      DSH_DESKTOP_UPDATE_REPOSITORY: 'AStarqx/DeepSeek-Harness-Desktop',
+    }, 'win32', 'x64')).toThrow(/repository releases/u)
   })
 
   it('matches electron-builder channel metadata names to the Desktop version', () => {

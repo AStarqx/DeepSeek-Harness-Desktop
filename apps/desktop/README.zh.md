@@ -14,6 +14,7 @@
 | 共享模块 | 宿主 API 可能依赖模块实例身份。 | Desktop 用目录软链接或 Windows junction 把每个内置第一方包连接到 profile；普通插件依赖保留在本地。 |
 | 状态归属 | 共享可执行依赖图会让 CLI（命令行界面）与 Desktop 相互改变 dsh、Cordis、插件或原生模块版本，而两个桌面进程还可能争用同一个 profile。 | Electron 在访问任何 profile 前获取进程生命周期单实例锁，并独占 `$DSH_HOME/profiles/desktop` 及其包管理器状态。CLI 与 Desktop 共享 `$DSH_HOME` 下受支持的产品数据，但绝不共享可执行包、插件激活、锁文件或 `node_modules`。 |
 | 通信 | 监听 Web 服务会引入端口归属、认证、CORS 与暴露风险；Electron 与上游 Node.js 之间也需要明确的跨进程协议。 | 应用不打开 Web 端口。`dsh-app://` 承载 Web 资源和 Fetch 流量；分帧字节管道以背压传输有界请求与响应分块，Node IPC 只承载子进程生命周期控制。 |
+| 窗口装饰 | 原生应用菜单会占据窗口标题栏下方的独立一行，因此 Windows 与 Linux 出现两行页头；窗口栏中的文档标题也与客户端已经绘制的会话页头重复。 | 除 macOS 外的每个窗口都隐藏原生标题栏，保留系统在页面之上绘制的窗口控件，并渲染一行注入的标题栏，承载 DeepSeek 标识、应用菜单与窗口拖拽区域。 |
 | 插件变更 | 包安装和 Host 启动可能失败。 | Desktop 停止 Host 后直接修改当前 profile。失败保留部分修改供用户修复，不自动回滚 profile。 |
 | 更新 | 桌面壳与 dsh 独立更新会重新产生版本分裂，而桌面壳未变化的数据块不应强制完整传输。 | Electron 壳、匹配的 dsh 运行时、Node.js 与 pnpm 组成一个已签名更新单元。平台更新产物可以复用未变化的数据块，但运行时版本选择绝不脱离 Desktop 发布。 |
 
@@ -27,6 +28,10 @@ Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 只包含已�
 
 Electron 根据应用 locale 选择类型化的英文或中文桌面壳文案，并以英文作为 fallback。菜单、原生对话框、启动页与插件管理渲染进程使用同一 locale 数据；仓库的 Client UI i18n gate 会检查这些桌面源文件。
 
+### 窗口装饰
+
+macOS 保留原生标题栏，并在系统菜单栏中渲染应用菜单。其他平台的所有窗口都设置 `titleBarStyle: 'hidden'` 与透明的 `titleBarOverlay`，因此系统仍在页面之上绘制最小化、最大化与关闭控件，同时标题文字消失，也不再渲染原生菜单栏。每个窗口的 preload 把标题栏注入自己的文档：以文档自身文字颜色绘制的 DeepSeek 标识、一个使用外壳语言包应用菜单文案的按钮、拖拽区域、为标题栏预留一行的页面偏移，以及一份[通过 CSSOM 采纳的样式表](../../.agents/notes/implemented/architecture/2026-09-11-desktop-in-window-title-bar.zh.md)，因为外壳文档的 `style-src 'self'` 策略会拒绝 `<style>` 元素和 style 属性。按下该按钮会在其下方以原生弹窗打开应用菜单——桌面插件、检查更新、退出——渲染进程同时上报标题栏实际渲染的文字颜色，作为窗口控件符号色，使主题切换后控件仍然清晰可辨。窗口图标取自仓库自有的鲸鱼标识：安装程序与可执行文件使用 `build/icon.ico`，运行中的窗口使用 `renderer/app-icon.png`。
+
 ### 运行时与插件激活
 
 签名资源中的 `resources/dsh/desktop-runtime.json` 绑定 shell 版本、内置 Node 版本、平台、架构、共享包版本和最终文件清单。启动读取元数据，并检查共享包记录。发布 schema、shell 版本、目标兼容性和文件完整性在打包时验证。首次启动不会把核心包复制到 profile 存储或通过 pnpm 安装核心包。
@@ -37,7 +42,7 @@ Electron 根据应用 locale 选择类型化的英文或中文桌面壳文案，
 4. 插件添加、更新和删除使用内置 pnpm 及 Desktop 独有的包管理器状态。保留的宿主包必须声明为 peer；共享包的嵌套副本和别名会被验证拒绝。普通插件依赖必须解析到 profile 内部。
 5. 插件变更在直接修改当前 profile 前停止后端。准备成功后启动 Host。包操作或 Host 启动失败会保留已修改文件并报告错误。未完成的包操作保留标记，使下次启动重试锁定依赖的安装和待执行构建。Desktop 不创建 staging 目录、激活日志或回滚副本。
 
-加载页不依赖 Host。错误页提供重启和重装指导。只有已打包应用的资源支持 profile 恢复时，才提供禁用插件和重置 Desktop；开发模式和早期初始化失败只提供重启。应用菜单仍提供插件管理器入口。每次后端启动前都会检查运行时标识；插件修改不自动回滚。
+加载页不依赖 Host。错误页提供重启和重装指导。只有已打包应用的资源支持 profile 恢复时，才提供禁用插件和重置 Desktop；开发模式和早期初始化失败只提供重启。窗口标题栏中的应用菜单仍提供插件管理器入口。每次后端启动前都会检查运行时标识；插件修改不自动回滚。
 
 重置删除 `$DSH_HOME/profiles/desktop` 中除所持事务锁外的所有条目，然后初始化内置 profile。它删除 Desktop 配置和已安装第三方包，不保留备份。共享任务、设置和 Harness-home `.env` 保持不变。壳资源和 preload 失败时使用独立文档显示可用恢复操作和诊断；其控件不依赖 preload。
 

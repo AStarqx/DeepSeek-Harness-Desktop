@@ -11,7 +11,10 @@ import {
   createWindowsTokenSigner,
   installWindowsNsisBootstrapSigner,
 } from './scripts/windows-sign.mjs'
-import { resolveDesktopAutoUpdateConfig } from './scripts/desktop-auto-update-environment.mjs'
+import {
+  desktopUsesRepositoryUpdates,
+  resolveDesktopAutoUpdateConfig,
+} from './scripts/desktop-auto-update-environment.mjs'
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './scripts/desktop-build-paths.mjs'
 
 /**
@@ -50,7 +53,11 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  // An unsigned build carries no updater configuration unless it publishes through its own
+  // repository releases, which needs no signing identity.
+  const update = unsigned && !desktopUsesRepositoryUpdates(env)
+    ? undefined
+    : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
   const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
   return {
     appId,
@@ -72,6 +79,7 @@ export function createElectronBuilderConfig(
     ],
     mac: {
       category: 'public.app-category.developer-tools',
+      icon: 'build/icon.png',
       identity: macOSSigning?.signingIdentity,
       forceCodeSigning: true,
       hardenedRuntime: true,
@@ -105,6 +113,7 @@ export function createElectronBuilderConfig(
       )
     },
     win: {
+      icon: 'build/icon.ico',
       forceCodeSigning: !unsigned,
       signtoolOptions: {
         sign: windowsSigner,
@@ -114,6 +123,7 @@ export function createElectronBuilderConfig(
     },
     linux: {
       category: 'Development',
+      icon: 'build/icon.png',
       target: ['AppImage'],
     },
     nsis: {
@@ -122,7 +132,7 @@ export function createElectronBuilderConfig(
       allowToChangeInstallationDirectory: true,
       differentialPackage: true,
     },
-    publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl }],
+    publish: update === undefined ? null : [update.publish],
   }
 }
 

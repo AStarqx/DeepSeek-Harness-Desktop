@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { DESKTOP_IPC, type DshDesktopStartupApi } from '../src/ipc.ts'
+import type { DesktopTitleBarTransport } from '../src/titlebar.ts'
 
 const electron = vi.hoisted(() => ({
   contextBridge: { exposeInMainWorld: vi.fn() },
@@ -7,7 +8,16 @@ const electron = vi.hoisted(() => ({
 }))
 vi.mock('electron', () => electron)
 
+const titlebar = vi.hoisted(() => ({ installDesktopTitleBar: vi.fn() }))
+vi.mock('../src/titlebar.ts', () => titlebar)
+
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.resetModules() })
+
+function installedTitleBar(): DesktopTitleBarTransport {
+  const transport = titlebar.installDesktopTitleBar.mock.calls[0]?.[0] as DesktopTitleBarTransport | undefined
+  if (transport === undefined) throw new Error('the preload did not install a title bar')
+  return transport
+}
 
 it.each(['dsh-app://app/index.html', 'https://shell/startup.html'])('exposes only the carrier marker to %s', async (url) => {
   vi.stubGlobal('location', new URL(url))
@@ -36,4 +46,18 @@ it('provides startup controls and a removable state subscription to shell docume
   dispose()
   expect(electron.ipcRenderer.off).toHaveBeenCalledWith(DESKTOP_IPC.backendState, handler)
   expect(api).not.toHaveProperty('plugins')
+})
+
+it('gives the injected title bar the shell locale and the application-menu channels', async () => {
+  vi.stubGlobal('location', new URL('dsh-app://app/index.html'))
+  await import('../src/preload-app.ts')
+  const transport = installedTitleBar()
+  await transport.locale()
+  await transport.openMenu({ x: 12, y: 36 })
+  await transport.reportSymbolColor('rgb(237, 237, 240)')
+  expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
+    [DESKTOP_IPC.localeGet],
+    [DESKTOP_IPC.applicationMenuOpen, { x: 12, y: 36 }],
+    [DESKTOP_IPC.titleBarSymbolColor, 'rgb(237, 237, 240)'],
+  ])
 })

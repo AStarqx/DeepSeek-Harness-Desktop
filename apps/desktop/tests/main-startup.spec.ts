@@ -12,7 +12,8 @@ const harness = await vi.hoisted(async () => {
   }
   const windows: FakeWindow[] = []
   const hosts: FakeHost[] = []
-  const handlers = new Map<string, (event: { senderFrame: { url: string } }) => unknown>()
+  const handlers = new Map<string, (event: { senderFrame: { url: string } }, payload?: unknown) => unknown>()
+  const menuPopup = vi.fn()
   let pluginsEnabled = false
   let preparing = deferred()
   let prepared = deferred()
@@ -34,7 +35,13 @@ const harness = await vi.hoisted(async () => {
     readonly show = vi.fn()
     readonly focus = vi.fn()
     readonly restore = vi.fn()
-    constructor(readonly options: { show: boolean }) { super(); windows.push(this) }
+    readonly setTitleBarOverlay = vi.fn()
+    constructor(readonly options: {
+      show: boolean
+      icon?: string
+      titleBarStyle?: string
+      titleBarOverlay?: { color: string; symbolColor: string; height: number }
+    }) { super(); windows.push(this) }
     isDestroyed() { return this.destroyed }
     isMinimized() { return false }
     async loadURL(url: string) {
@@ -42,6 +49,7 @@ const harness = await vi.hoisted(async () => {
       if (url === 'dsh-app://app/index.html') navigated.resolve()
     }
     static getAllWindows() { return windows.filter(window => !window.destroyed) }
+    static fromWebContents() { return windows.find(window => !window.destroyed) ?? null }
     close() { this.destroyed = true; this.emit('closed') }
   }
   class FakeHost {
@@ -73,7 +81,7 @@ const harness = await vi.hoisted(async () => {
     }),
   })
   return {
-    windows, hosts, handlers, app, FakeWindow, FakeHost,
+    windows, hosts, handlers, app, FakeWindow, FakeHost, menuPopup,
     dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
     applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
     assertProfileRuntime: vi.fn(),
@@ -99,9 +107,11 @@ vi.mock('electron', () => ({
   BrowserWindow: harness.FakeWindow,
   dialog: harness.dialog,
   ipcMain: {
-    handle: (channel: string, handler: (event: { senderFrame: { url: string } }) => unknown) => { harness.handlers.set(channel, handler) },
+    handle: (channel: string, handler: (event: { senderFrame: { url: string } }, payload?: unknown) => unknown) => {
+      harness.handlers.set(channel, handler)
+    },
   },
-  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
+  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn(() => ({ popup: harness.menuPopup })) },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
 }))
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: 'desktop-test-profile' }) }))
@@ -124,9 +134,13 @@ vi.mock('../src/host-process.ts', () => ({ DesktopHostProcess: harness.FakeHost 
 vi.mock('../src/update-coordinator.ts', () => ({ DesktopUpdateCoordinator: vi.fn() }))
 
 function invoke(channel: string): unknown {
+  return invokeFrom('dsh-app://shell/startup.html', channel)
+}
+
+function invokeFrom(url: string, channel: string, payload?: unknown): unknown {
   const handler = harness.handlers.get(channel)
   if (handler === undefined) throw new Error(`missing handler ${channel}`)
-  return handler({ senderFrame: { url: 'dsh-app://shell/startup.html' } })
+  return handler({ senderFrame: { url } }, payload)
 }
 
 beforeEach(() => {
@@ -364,5 +378,73 @@ describe('desktop main startup', () => {
     expect(host.stop).toHaveBeenCalledTimes(1)
     expect(window.urls).toEqual(['dsh-app://shell/startup.html'])
     expect(harness.windows).toHaveLength(1)
+  })
+})
+
+describe('desktop window chrome', () => {
+  it('carries the shell title bar wherever the system menu bar is absent', async () => {
+    const {
+      DESKTOP_TITLE_BAR_HEIGHT,
+      DESKTOP_TITLE_BAR_OVERLAY_COLOR,
+      DESKTOP_TITLE_BAR_SYMBOL_COLOR,
+      desktopOwnsWindowChrome,
+    } = await import('../src/titlebar.ts')
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const options = harness.windows[0]!.options
+    if (!desktopOwnsWindowChrome(process.platform)) {
+      expect(options.titleBarStyle).toBeUndefined()
+      expect(options.titleBarOverlay).toBeUndefined()
+      return
+    }
+    expect(options.titleBarStyle).toBe('hidden')
+    expect(options.titleBarOverlay).toEqual({
+      color: DESKTOP_TITLE_BAR_OVERLAY_COLOR,
+      symbolColor: DESKTOP_TITLE_BAR_SYMBOL_COLOR,
+      height: DESKTOP_TITLE_BAR_HEIGHT,
+    })
+  })
+
+  it('opens the application menu at the anchor the title bar reported', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const window = harness.windows[0]!
+    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, { x: 10.6, y: 36.2 })
+    expect(harness.menuPopup).toHaveBeenCalledWith({ window, x: 11, y: 36 })
+  })
+
+  it.each([[{ x: -1, y: 0 }], [{ x: 0 }], [undefined]])('rejects the anchor %j', async (anchor) => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, anchor))
+      .toThrow(/application menu anchor/)
+    expect(harness.menuPopup).not.toHaveBeenCalled()
+  })
+
+  it.skipIf(process.platform === 'darwin')('applies the reported window-control color to its own window', async () => {
+    const { DESKTOP_TITLE_BAR_OVERLAY_COLOR } = await import('../src/titlebar.ts')
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const window = harness.windows[0]!
+    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarSymbolColor, 'rgb(237, 237, 240)')
+    expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
+      color: DESKTOP_TITLE_BAR_OVERLAY_COLOR,
+      symbolColor: 'rgb(237, 237, 240)',
+    })
+  })
+
+  it('rejects a window-control color that is not a rendered color', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarSymbolColor, 'javascript:alert(1)'))
+      .toThrow(/window-control color/)
+    expect(harness.windows[0]!.setTitleBarOverlay).not.toHaveBeenCalled()
+  })
+
+  it('serves the title-bar locale to the loaded application document', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    expect(invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.localeGet)).toMatchObject({ id: 'en' })
+    expect(() => invokeFrom('dsh-app://third-party/index.html', DESKTOP_IPC.localeGet)).toThrow(/unowned renderer/)
   })
 })
