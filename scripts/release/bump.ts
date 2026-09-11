@@ -20,6 +20,7 @@ import { join, matchesGlob } from 'node:path'
 import { parseArgs } from 'node:util'
 import { releaseFamily, type ReleaseFamily, type ReleaseMember } from './families.ts'
 import { capture, isEntry } from './process.ts'
+import { pnpmInvocation } from '../pnpm-invocation.ts'
 
 /** Files npm publishes whether or not `files` lists them. */
 const ALWAYS_PUBLISHED = ['package.json', 'README*', 'LICENSE*', 'LICENCE*'] as const
@@ -392,7 +393,10 @@ function main(): void {
   const dryRun = values['dry-run']
   if (!dryRun) {
     for (const entry of planned) writeVersion(root, entry.manifestPath, entry.from, entry.to)
-    capture('pnpm', ['install', '--lockfile-only'])
+    // The package manager publishes its lifecycle entrypoint as either a JavaScript file or an
+    // executable, and a shell-free spawn reaches only the form this resolver answers with.
+    const lockfileInstall = pnpmInvocation(['install', '--lockfile-only'])
+    capture(lockfileInstall.command, lockfileInstall.args)
   }
 
   const summary = sharedVersion
