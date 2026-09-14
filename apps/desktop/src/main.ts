@@ -35,6 +35,12 @@ import {
 } from './titlebar.ts'
 
 const SCHEME = 'dsh-app'
+
+/** Delay before the first automatic release check, which populates the title-bar badge. */
+const UPDATE_CHECK_DELAY_MS = 10_000
+
+/** How often a running application re-checks the release stream on its own. */
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 let focusPrimaryWindow = (): void => {}
 type RecoveryAction = 'restart' | 'plugins' | 'reset'
 let profileRecoveryAvailable = (): boolean => false
@@ -184,6 +190,7 @@ async function main(): Promise<void> {
   let pluginWindow: BrowserWindow | undefined
   let shellInstallerOwnsQuit = false
   let updateState: DesktopUpdateState = { phase: 'idle' }
+  let manualUpdateCheck = false
   const locale = resolveDesktopLocale(app.getLocale())
   const messages = locale.messages
   const appPreload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))
@@ -241,8 +248,10 @@ async function main(): Promise<void> {
 
   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
     updateState = state
+    // An automatic check that fails is not the user's problem; only a requested check reports it.
+    const visible = state.phase === 'error' && !manualUpdateCheck ? { phase: 'idle' } as DesktopUpdateState : state
     for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(DESKTOP_IPC.updatesState, state)
+      window.webContents.send(DESKTOP_IPC.updatesState, visible)
     }
     return state
   }
@@ -302,6 +311,19 @@ async function main(): Promise<void> {
       await backend.stop()
     },
   )
+
+  /** Download and install the retained release, reporting a failure the caller can show. */
+  const installUpdate = async (): Promise<DesktopUpdateState> => {
+    const installed = await updates.install()
+    if (installed.phase === 'error') {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: messages.updateFailedTitle,
+        message: installed.message ?? messages.unknownError,
+      })
+    }
+    return installed
+  }
 
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url)
@@ -393,35 +415,44 @@ async function main(): Promise<void> {
       await showStartupError(error)
     }
   })
+  ipcMain.handle(DESKTOP_IPC.updatesStatus, (event) => {
+    assertDesktopSender(event, ['shell', 'app'])
+    return updateState
+  })
   ipcMain.handle(DESKTOP_IPC.updatesCheck, async (event) => {
-    assertDesktopSender(event, ['shell'])
+    assertDesktopSender(event, ['shell', 'app'])
     return updates.check()
   })
   ipcMain.handle(DESKTOP_IPC.updatesInstall, async (event) => {
-    assertDesktopSender(event, ['shell'])
-    await updates.install()
+    assertDesktopSender(event, ['shell', 'app'])
+    await installUpdate()
   })
 
   const checkAndPrompt = async (manual: boolean): Promise<void> => {
-    const state = await updates.check()
+    manualUpdateCheck = manual
+    let state: DesktopUpdateState
+    try {
+      state = await updates.check()
+    }
+    finally {
+      manualUpdateCheck = false
+    }
+    // An automatic check only lights up the title-bar badge; the user asked for nothing.
+    if (!manual) return
     if (state.phase === 'error') {
-      if (manual) {
-        await dialog.showMessageBox({
-          type: 'error',
-          title: messages.updateCheckFailedTitle,
-          message: state.message ?? messages.unknownError,
-        })
-      }
+      await dialog.showMessageBox({
+        type: 'error',
+        title: messages.updateCheckFailedTitle,
+        message: state.message ?? messages.unknownError,
+      })
       return
     }
     if (state.phase !== 'available') {
-      if (manual) {
-        await dialog.showMessageBox({
-          type: 'info',
-          title: messages.updateCheckTitle,
-          message: state.message ?? messages.updateCurrent,
-        })
-      }
+      await dialog.showMessageBox({
+        type: 'info',
+        title: messages.updateCheckTitle,
+        message: state.message ?? messages.updateCurrent,
+      })
       return
     }
     const result = await dialog.showMessageBox({
@@ -434,14 +465,8 @@ async function main(): Promise<void> {
       cancelId: 1,
     })
     if (result.response !== 0) return
-    const installed = await updates.install()
-    if (installed.phase === 'error') {
-      await dialog.showMessageBox({
-        type: 'error',
-        title: messages.updateFailedTitle,
-        message: installed.message ?? messages.unknownError,
-      })
-    }
+    // The title-bar badge reports the download that follows.
+    await installUpdate()
   }
 
   const openPluginWindow = (): void => {
@@ -572,7 +597,9 @@ async function main(): Promise<void> {
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   }
   publishUpdate(updateState)
-  setTimeout(() => { void checkAndPrompt(false) }, 10_000)
+  // A long-running window re-checks on its own, so a release published later still lights the badge.
+  setTimeout(() => { void checkAndPrompt(false) }, UPDATE_CHECK_DELAY_MS)
+  setInterval(() => { void checkAndPrompt(false) }, UPDATE_CHECK_INTERVAL_MS).unref()
 }
 
 const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })

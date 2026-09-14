@@ -12,18 +12,39 @@ import {
   installDesktopTitleBar,
 } from '../src/titlebar.ts'
 import { resolveDesktopLocale } from '../src/locale.ts'
+import type { DesktopUpdateState } from '../src/ipc.ts'
 
 const LOCALE = resolveDesktopLocale('zh-CN')
 
 function transport(platform: NodeJS.Platform = 'win32') {
   const openMenu = vi.fn(() => Promise.resolve())
   const reportSymbolColor = vi.fn(() => Promise.resolve())
+  const updates = {
+    status: vi.fn(() => Promise.resolve<DesktopUpdateState>({ phase: 'idle' })),
+    subscribe: vi.fn((_listener: (state: DesktopUpdateState) => void) => () => {}),
+    install: vi.fn(() => Promise.resolve()),
+    check: vi.fn(() => Promise.resolve()),
+  }
   return {
     platform,
     locale: vi.fn(() => Promise.resolve(LOCALE)),
     openMenu,
     reportSymbolColor,
+    updates,
   }
+}
+
+/** Drive the update badge the title bar subscribed to. */
+function publishUpdateState(underTest: ReturnType<typeof transport>, state: DesktopUpdateState): void {
+  const listener = underTest.updates.subscribe.mock.calls[0]?.[0]
+  if (listener === undefined) throw new Error('the title bar did not subscribe to update states')
+  listener(state)
+}
+
+function updateBadge(): HTMLButtonElement {
+  const badge = titleBar().querySelector<HTMLButtonElement>('.dsh-desktop-title-bar-update')
+  if (badge === null) throw new Error('the title bar has no update badge')
+  return badge
 }
 
 function titleBar(): HTMLElement {
@@ -149,5 +170,67 @@ describe('desktop title bar installation', () => {
     installDesktopTitleBar(bar)
     await vi.waitFor(() => { expect(error).toHaveBeenCalled() })
     expect(document.querySelector('.dsh-desktop-title-bar')).toBeNull()
+  })
+})
+
+describe('desktop title bar update badge', () => {
+  it('stays hidden while no update needs attention', async () => {
+    const bar = transport()
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(document.querySelector('.dsh-desktop-title-bar')).not.toBeNull() })
+    expect(updateBadge().getAttribute('data-visible')).toBeNull()
+    expect(bar.updates.subscribe).toHaveBeenCalledOnce()
+  })
+
+  it('announces an available release and installs it when pressed', async () => {
+    const bar = transport()
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(document.querySelector('.dsh-desktop-title-bar')).not.toBeNull() })
+    publishUpdateState(bar, { phase: 'available', version: '0.1.7' })
+    expect(updateBadge().getAttribute('data-visible')).toBe('')
+    expect(updateBadge().getAttribute('data-phase')).toBe('available')
+    expect(updateBadge().textContent).toContain('0.1.7')
+    expect(updateBadge().disabled).toBe(false)
+    updateBadge().click()
+    expect(bar.updates.install).toHaveBeenCalledOnce()
+  })
+
+  it('reports download progress in place', async () => {
+    const bar = transport()
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(document.querySelector('.dsh-desktop-title-bar')).not.toBeNull() })
+    publishUpdateState(bar, {
+      phase: 'downloading',
+      version: '0.1.7',
+      progress: { percent: 42, transferred: 10, total: 24, bytesPerSecond: 1 },
+    })
+    const badge = updateBadge()
+    expect(badge.getAttribute('data-phase')).toBe('downloading')
+    expect(badge.textContent).toContain('42')
+    expect(badge.querySelector<HTMLElement>('.dsh-desktop-title-bar-update-bar')?.style.width).toBe('42%')
+    badge.click()
+    expect(bar.updates.install).not.toHaveBeenCalled()
+  })
+
+  it('shows a check in flight and a requested check that failed', async () => {
+    const bar = transport()
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(document.querySelector('.dsh-desktop-title-bar')).not.toBeNull() })
+    publishUpdateState(bar, { phase: 'checking' })
+    expect(updateBadge().getAttribute('data-phase')).toBe('checking')
+    expect(updateBadge().textContent).toBe(LOCALE.messages.updateBadgeChecking)
+    publishUpdateState(bar, { phase: 'error', message: 'offline' })
+    expect(updateBadge().getAttribute('data-phase')).toBe('error')
+    expect(updateBadge().disabled).toBe(false)
+    updateBadge().click()
+    expect(bar.updates.check).toHaveBeenCalledOnce()
+  })
+
+  it('renders the state a window discovers after it opened', async () => {
+    const bar = transport()
+    bar.updates.status.mockResolvedValueOnce({ phase: 'available', version: '9.9.9' })
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(updateBadge().getAttribute('data-phase')).toBe('available') })
+    expect(updateBadge().textContent).toContain('9.9.9')
   })
 })

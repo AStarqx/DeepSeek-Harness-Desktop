@@ -8,7 +8,15 @@ const electron = vi.hoisted(() => ({
 }))
 vi.mock('electron', () => electron)
 
-const titlebar = vi.hoisted(() => ({ installDesktopTitleBar: vi.fn() }))
+const titlebar = vi.hoisted(() => ({
+  installDesktopTitleBar: vi.fn(),
+  desktopUpdateTransport: vi.fn(() => ({
+    status: vi.fn(),
+    subscribe: vi.fn(),
+    install: vi.fn(),
+    check: vi.fn(),
+  })),
+}))
 vi.mock('../src/titlebar.ts', () => titlebar)
 
 afterEach(() => { vi.clearAllMocks(); vi.resetModules() })

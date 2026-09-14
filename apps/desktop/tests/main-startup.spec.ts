@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
-import { DESKTOP_IPC } from '../src/ipc.ts'
+import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
 
 const harness = await vi.hoisted(async () => {
   const { EventEmitter } = await import('node:events')
@@ -66,6 +66,16 @@ const harness = await vi.hoisted(async () => {
     })
     constructor(readonly node: string, readonly runtime: string, readonly profile: string) { hosts.push(this) }
   }
+  class FakeUpdateCoordinator {
+    static readonly instances: FakeUpdateCoordinator[] = []
+    state: DesktopUpdateState = { phase: 'idle' }
+    readonly check = vi.fn(async () => this.publish(this.state))
+    readonly install = vi.fn(async () => this.publish({ phase: 'ready', version: '9.9.9' }))
+    constructor(
+      readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
+      readonly beforeRestart?: () => Promise<void>,
+    ) { FakeUpdateCoordinator.instances.push(this) }
+  }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: true,
     name: 'Desktop test',
@@ -83,7 +93,7 @@ const harness = await vi.hoisted(async () => {
     }),
   })
   return {
-    windows, hosts, handlers, app, FakeWindow, FakeHost, menuPopup, menuTemplates,
+    windows, hosts, handlers, app, FakeWindow, FakeHost, FakeUpdateCoordinator, menuPopup, menuTemplates,
     dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
     shell: { openExternal: vi.fn(() => Promise.resolve()) },
     applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
@@ -98,6 +108,7 @@ const harness = await vi.hoisted(async () => {
     reset() {
       windows.length = 0; hosts.length = 0; handlers.clear(); app.removeAllListeners()
       menuTemplates.length = 0
+      FakeUpdateCoordinator.instances.length = 0
       app.isPackaged = true
       pluginsEnabled = false
       preparing = deferred(); prepared = deferred(); hostStarted = deferred()
@@ -142,7 +153,7 @@ vi.mock('../src/project-manager.ts', () => ({
   },
 }))
 vi.mock('../src/host-process.ts', () => ({ DesktopHostProcess: harness.FakeHost }))
-vi.mock('../src/update-coordinator.ts', () => ({ DesktopUpdateCoordinator: vi.fn() }))
+vi.mock('../src/update-coordinator.ts', () => ({ DesktopUpdateCoordinator: harness.FakeUpdateCoordinator }))
 
 function invoke(channel: string): unknown {
   return invokeFrom('dsh-app://shell/startup.html', channel)
@@ -180,11 +191,40 @@ function lastMessageBoxOptions(): Record<string, unknown> {
   return (call.length === 2 ? call[1] : call[0]) as Record<string, unknown>
 }
 
+/** The update coordinator the running application constructed. */
+function updateCoordinator(): InstanceType<typeof harness.FakeUpdateCoordinator> {
+  const coordinator = harness.FakeUpdateCoordinator.instances.at(-1)
+  if (coordinator === undefined) throw new Error('the application did not construct an update coordinator')
+  return coordinator
+}
+
+/** Start the application and wait until its window shows the backend and the update timers are armed. */
+async function startApplication(): Promise<void> {
+  await import('../src/main.ts')
+  await harness.preparing.promise
+  harness.prepared.resolve()
+  await harness.hostStarted.promise
+  harness.hosts[0]!.ready.resolve()
+  await harness.navigated.promise
+  await vi.waitFor(() => {
+    const send = harness.windows[0]!.webContents.send
+    expect(send).toHaveBeenCalledWith(DESKTOP_IPC.updatesState, { phase: 'idle' })
+  })
+}
+
+/** States the shell pushed to the main window over the update channel. */
+function publishedUpdateStates(): DesktopUpdateState[] {
+  return harness.windows[0]!.webContents.send.mock.calls
+    .filter(call => call[0] === DESKTOP_IPC.updatesState)
+    .map(call => call[1] as DesktopUpdateState)
+}
+
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   vi.useFakeTimers()
   harness.reset()
+  harness.dialog.showMessageBox.mockResolvedValue({ response: 1 })
   vi.stubEnv('DSH_DESKTOP_NODE_BINARY', 'test-node')
   vi.stubEnv('DSH_DESKTOP_PNPM_ENTRY', 'test-pnpm')
   vi.stubEnv('DSH_DESKTOP_DSH_DIR', 'test-runtime')
@@ -518,5 +558,62 @@ describe('desktop window chrome', () => {
     await vi.waitFor(() => { expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(1) })
     await Promise.resolve()
     expect(harness.shell.openExternal).not.toHaveBeenCalled()
+  })
+
+  it('lights the update badge from an automatic check without interrupting the user', async () => {
+    await startApplication()
+    updateCoordinator().state = { phase: 'available', version: '0.1.7' }
+    vi.advanceTimersByTime(10_000)
+    await vi.waitFor(() => {
+      expect(publishedUpdateStates()).toContainEqual({ phase: 'available', version: '0.1.7' })
+    })
+    expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed automatic check out of the badge', async () => {
+    await startApplication()
+    updateCoordinator().state = { phase: 'error', message: 'offline' }
+    vi.advanceTimersByTime(10_000)
+    await vi.waitFor(() => { expect(updateCoordinator().check).toHaveBeenCalled() })
+    expect(publishedUpdateStates()).toContainEqual({ phase: 'idle' })
+    expect(publishedUpdateStates()).not.toContainEqual({ phase: 'error', message: 'offline' })
+  })
+
+  it('reports a failed check the user asked for', async () => {
+    const { resolveDesktopLocale } = await import('../src/locale.ts')
+    const messages = resolveDesktopLocale('en-US').messages
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    updateCoordinator().state = { phase: 'error', message: 'offline' }
+    menuItem(messages.checkUpdatesMenu).click?.()
+    await vi.waitFor(() => { expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(1) })
+    expect(lastMessageBoxOptions()).toMatchObject({ title: messages.updateCheckFailedTitle })
+    expect(publishedUpdateStates()).toContainEqual({ phase: 'error', message: 'offline' })
+  })
+
+  it('downloads the release only when the user accepts the prompt', async () => {
+    const { resolveDesktopLocale } = await import('../src/locale.ts')
+    const messages = resolveDesktopLocale('en-US').messages
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const coordinator = updateCoordinator()
+    coordinator.state = { phase: 'available', version: '0.1.7' }
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    menuItem(messages.checkUpdatesMenu).click?.()
+    await vi.waitFor(() => { expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(1) })
+    expect(coordinator.install).not.toHaveBeenCalled()
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    menuItem(messages.checkUpdatesMenu).click?.()
+    await vi.waitFor(() => { expect(coordinator.install).toHaveBeenCalledOnce() })
+  })
+
+  it('serves the current update state to a window that asks for it', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    updateCoordinator().state = { phase: 'available', version: '0.1.7' }
+    menuItem((await import('../src/locale.ts')).resolveDesktopLocale('en-US').messages.checkUpdatesMenu).click?.()
+    await vi.waitFor(() => { expect(publishedUpdateStates()).toContainEqual({ phase: 'available', version: '0.1.7' }) })
+    expect(invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.updatesStatus))
+      .toEqual({ phase: 'available', version: '0.1.7' })
   })
 })

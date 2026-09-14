@@ -20,16 +20,30 @@ export const DESKTOP_IPC = {
   titleBarSymbolColor: 'dsh-desktop:title-bar-symbol-color',
   configurationReset: 'dsh-desktop:configuration-reset',
   backendState: 'dsh-desktop:backend-state',
+  updatesStatus: 'dsh-desktop:updates-status',
   updatesCheck: 'dsh-desktop:updates-check',
   updatesInstall: 'dsh-desktop:updates-install',
   updatesState: 'dsh-desktop:updates-state',
 } as const
 
+/** Progress of one in-flight Desktop release download. */
+export interface DesktopUpdateProgress {
+  /** Completed share of the download, 0 through 100. */
+  readonly percent: number
+  /** Bytes received so far. */
+  readonly transferred: number
+  /** Total bytes the release download carries. */
+  readonly total: number
+  /** Current download rate in bytes per second. */
+  readonly bytesPerSecond: number
+}
+
 /** Desktop release update state rendered by desktop-owned UI. */
 export interface DesktopUpdateState {
-  readonly phase: 'idle' | 'checking' | 'available' | 'installing' | 'ready' | 'error'
+  readonly phase: 'idle' | 'checking' | 'available' | 'downloading' | 'installing' | 'ready' | 'error'
   readonly version?: string
   readonly message?: string
+  readonly progress?: DesktopUpdateProgress
 }
 
 /** Narrow bridge exposed through context isolation. */

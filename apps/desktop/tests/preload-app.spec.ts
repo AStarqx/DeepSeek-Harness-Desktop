@@ -8,7 +8,15 @@ const electron = vi.hoisted(() => ({
 }))
 vi.mock('electron', () => electron)
 
-const titlebar = vi.hoisted(() => ({ installDesktopTitleBar: vi.fn() }))
+const titlebar = vi.hoisted(() => ({
+  installDesktopTitleBar: vi.fn(),
+  desktopUpdateTransport: vi.fn(() => ({
+    status: vi.fn(),
+    subscribe: vi.fn(),
+    install: vi.fn(),
+    check: vi.fn(),
+  })),
+}))
 vi.mock('../src/titlebar.ts', () => titlebar)
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.resetModules() })
@@ -60,4 +68,10 @@ it('gives the injected title bar the shell locale and the application-menu chann
     [DESKTOP_IPC.applicationMenuOpen, { x: 12, y: 36 }],
     [DESKTOP_IPC.titleBarSymbolColor, 'rgb(237, 237, 240)'],
   ])
+})
+
+it('gives the injected title bar the release stream of the shell', async () => {
+  vi.stubGlobal('location', new URL('dsh-app://app/index.html'))
+  await import('../src/preload-app.ts')
+  expect(titlebar.desktopUpdateTransport).toHaveBeenCalledWith(electron.ipcRenderer)
 })

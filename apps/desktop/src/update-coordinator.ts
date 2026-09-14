@@ -3,13 +3,14 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
-import electronUpdater, { type AppUpdater } from 'electron-updater'
+import electronUpdater, { type AppUpdater, type ProgressInfo } from 'electron-updater'
 import type { DesktopUpdateState } from './ipc.ts'
 const { autoUpdater } = electronUpdater
 
 /** Checks, downloads, and installs one complete Desktop release. */
 export class DesktopUpdateCoordinator {
   private availableVersion: string | undefined
+  private downloadingVersion: string | undefined
   private checkOperation: Promise<DesktopUpdateState> | undefined
   private installOperation: Promise<DesktopUpdateState> | undefined
 
@@ -29,6 +30,21 @@ export class DesktopUpdateCoordinator {
   ) {
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
+    // The download reports its own progress so the shell can show it while it runs.
+    this.updater.on('download-progress', (progress: ProgressInfo) => {
+      const version = this.downloadingVersion
+      if (version === undefined) return
+      this.publish({
+        phase: 'downloading',
+        version,
+        progress: {
+          percent: Math.round(progress.percent),
+          transferred: progress.transferred,
+          total: progress.total,
+          bytesPerSecond: progress.bytesPerSecond,
+        },
+      })
+    })
   }
 
   /** Check the configured Desktop release stream and retain an available version. */
@@ -77,6 +93,7 @@ export class DesktopUpdateCoordinator {
       throw new Error('desktop update: no verified update is available')
     }
     this.publish({ phase: 'installing', version })
+    this.downloadingVersion = version
     try {
       await this.updater.downloadUpdate()
       this.availableVersion = undefined
@@ -90,6 +107,9 @@ export class DesktopUpdateCoordinator {
         version,
         message: error instanceof Error ? error.message : String(error),
       })
+    }
+    finally {
+      this.downloadingVersion = undefined
     }
   }
 }

@@ -2,7 +2,8 @@
 
 import type { BrowserWindowConstructorOptions } from 'electron'
 import { DESKTOP_BRAND_MARK, DESKTOP_BRAND_MARK_VIEWBOX } from './brand.ts'
-import type { DesktopLocale } from './locale.ts'
+import { formatDesktopMessage, type DesktopLocale } from './locale.ts'
+import { DESKTOP_IPC, type DesktopUpdateState } from './ipc.ts'
 
 /** Height of the Desktop title bar in CSS pixels. */
 export const DESKTOP_TITLE_BAR_HEIGHT = 36
@@ -32,6 +33,45 @@ export interface DesktopTitleBarTransport {
   openMenu(anchor: DesktopMenuAnchor): Promise<void>
   /** Reports the color of the window-control glyphs the system draws over the title bar. */
   reportSymbolColor(color: string): Promise<void>
+  /** Reads and drives the Desktop release stream the title bar reports on. */
+  readonly updates: DesktopUpdateTransport
+}
+
+/** Renderer transport for the Desktop release stream. */
+export interface DesktopUpdateTransport {
+  /** Reads the current update state, so a window opened later renders it. */
+  status(): Promise<DesktopUpdateState>
+  /** Subscribes to update states; the returned disposer removes the listener. */
+  subscribe(listener: (state: DesktopUpdateState) => void): () => void
+  /** Downloads and installs the retained release. */
+  install(): Promise<void>
+  /** Checks the release stream again. */
+  check(): Promise<void>
+}
+
+/** The Electron IPC surface both Desktop preloads use for the release stream. */
+export interface DesktopIpcBridge {
+  invoke(channel: string, ...args: unknown[]): Promise<unknown>
+  on(channel: string, listener: (event: unknown, state: DesktopUpdateState) => void): void
+  off(channel: string, listener: (event: unknown, state: DesktopUpdateState) => void): void
+}
+
+/**
+ * Build the release-stream transport over the shell's own IPC channels.
+ * @param ipc - Renderer IPC bridge of the owning preload.
+ * @returns Transport the injected title bar renders update states from.
+ */
+export function desktopUpdateTransport(ipc: DesktopIpcBridge): DesktopUpdateTransport {
+  return {
+    status: () => ipc.invoke(DESKTOP_IPC.updatesStatus) as Promise<DesktopUpdateState>,
+    subscribe(listener) {
+      const handle = (_event: unknown, state: DesktopUpdateState): void => { listener(state) }
+      ipc.on(DESKTOP_IPC.updatesState, handle)
+      return () => { ipc.off(DESKTOP_IPC.updatesState, handle) }
+    },
+    install: async () => { await ipc.invoke(DESKTOP_IPC.updatesInstall) },
+    check: async () => { await ipc.invoke(DESKTOP_IPC.updatesCheck) },
+  }
 }
 
 /** Everything the injected title bar needs from its owning preload. */
@@ -43,7 +83,14 @@ export interface DesktopTitleBarOptions extends DesktopTitleBarTransport {
 const TITLE_BAR_CLASS = 'dsh-desktop-title-bar'
 const BRAND_MARK_CLASS = 'dsh-desktop-title-bar-mark'
 const MENU_BUTTON_CLASS = 'dsh-desktop-title-bar-menu'
+const UPDATE_CLASS = 'dsh-desktop-title-bar-update'
+const UPDATE_ICON_CLASS = 'dsh-desktop-title-bar-update-icon'
+const UPDATE_LABEL_CLASS = 'dsh-desktop-title-bar-update-label'
+const UPDATE_BAR_CLASS = 'dsh-desktop-title-bar-update-bar'
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+
+/* The system draws its window controls over the page, so the badge keeps clear of that strip. */
+const WINDOW_CONTROLS_WIDTH = 150
 
 /*
  * Adopted stylesheets are the one styling route the shell documents admit: their
@@ -68,7 +115,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-inline: 10px 6px;
+  padding: 0 ${WINDOW_CONTROLS_WIDTH}px 0 10px;
   background: transparent;
   color: inherit;
   user-select: none;
@@ -78,6 +125,52 @@ body {
 .${BRAND_MARK_CLASS} {
   flex: none;
   display: block;
+}
+.${UPDATE_CLASS} {
+  -webkit-app-region: no-drag;
+  margin-left: auto;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  position: relative;
+  overflow: hidden;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #4d6bfe;
+  color: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.${UPDATE_CLASS}[data-visible] { display: flex; }
+.${UPDATE_CLASS}[data-phase='checking'],
+.${UPDATE_CLASS}[data-phase='installing'],
+.${UPDATE_CLASS}[data-phase='ready'],
+.${UPDATE_CLASS}[data-phase='downloading'] { cursor: default; }
+.${UPDATE_CLASS}[data-phase='error'] { background: transparent; color: inherit; box-shadow: inset 0 0 0 1px currentColor; }
+.${UPDATE_CLASS}:hover { filter: brightness(1.08); }
+.${UPDATE_CLASS}:disabled { opacity: 1; }
+.${UPDATE_CLASS}:disabled:hover { filter: none; }
+.${UPDATE_CLASS}[data-phase='error']:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.08)); }
+.${UPDATE_ICON_CLASS} { flex: none; display: block; }
+.${UPDATE_LABEL_CLASS} { position: relative; }
+.${UPDATE_BAR_CLASS} {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 0;
+  background: #ffffff;
+  transition: width 0.2s linear;
+}
+.${UPDATE_CLASS}[data-phase='checking'] .${UPDATE_ICON_CLASS} { animation: dsh-desktop-update-spin 1.1s linear infinite; }
+@keyframes dsh-desktop-update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .${UPDATE_CLASS}[data-phase='checking'] .${UPDATE_ICON_CLASS} { animation: none; }
+  .${UPDATE_BAR_CLASS} { transition: none; }
 }
 .${MENU_BUTTON_CLASS} {
   -webkit-app-region: no-drag;
@@ -155,13 +248,13 @@ export function desktopSymbolColor(value: unknown): string {
 export function installDesktopTitleBar(options: DesktopTitleBarOptions): void {
   if (!desktopOwnsWindowChrome(options.platform)) return
   void options.locale().then((locale) => {
-    const install = (): void => { renderTitleBar(locale.messages.application, options) }
+    const install = (): void => { renderTitleBar(locale, options) }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true })
     else install()
   }).catch((error: unknown) => { console.error(error) })
 }
 
-function renderTitleBar(label: string, transport: DesktopTitleBarTransport): void {
+function renderTitleBar(locale: DesktopLocale, transport: DesktopTitleBarTransport): void {
   if (document.querySelector(`.${TITLE_BAR_CLASS}`) !== null) return
   const sheet = new CSSStyleSheet()
   sheet.replaceSync(TITLE_BAR_CSS)
@@ -171,12 +264,12 @@ function renderTitleBar(label: string, transport: DesktopTitleBarTransport): voi
   const button = document.createElement('button')
   button.type = 'button'
   button.className = MENU_BUTTON_CLASS
-  button.textContent = label
+  button.textContent = locale.messages.application
   button.addEventListener('click', () => {
     const rect = button.getBoundingClientRect()
     void transport.openMenu({ x: Math.round(rect.left), y: Math.round(rect.bottom) })
   })
-  bar.append(brandMark(document), button)
+  bar.append(brandMark(document), button, updateBadge(document, locale, transport.updates))
   document.body.append(bar)
   const publishSymbolColor = (): void => {
     void transport.reportSymbolColor(getComputedStyle(bar).color)
@@ -184,6 +277,72 @@ function renderTitleBar(label: string, transport: DesktopTitleBarTransport): voi
   publishSymbolColor()
   new MutationObserver(publishSymbolColor).observe(document.body, { attributes: true })
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', publishSymbolColor)
+}
+
+/**
+ * Render the release indicator and keep it current.
+ *
+ * The badge is the shell's only passive update surface: it appears when a release is
+ * available or when the user asked for a check, and it reports download progress in place.
+ */
+function updateBadge(document: Document, locale: DesktopLocale, updates: DesktopUpdateTransport): HTMLButtonElement {
+  const badge = document.createElement('button')
+  badge.type = 'button'
+  badge.className = UPDATE_CLASS
+  const icon = document.createElementNS(SVG_NAMESPACE, 'svg')
+  icon.setAttribute('class', UPDATE_ICON_CLASS)
+  icon.setAttribute('viewBox', '0 0 16 16')
+  icon.setAttribute('width', '13')
+  icon.setAttribute('height', '13')
+  icon.setAttribute('aria-hidden', 'true')
+  const glyph = document.createElementNS(SVG_NAMESPACE, 'path')
+  glyph.setAttribute('fill', 'currentColor')
+  // An arrow into a tray for an available update, a ring for a check in flight.
+  const progress = document.createElement('span')
+  progress.className = UPDATE_BAR_CLASS
+  const label = document.createElement('span')
+  label.className = UPDATE_LABEL_CLASS
+  let phase: DesktopUpdateState['phase'] = 'idle'
+
+  const render = (state: DesktopUpdateState): void => {
+    phase = state.phase
+    const messages = locale.messages
+    const version = state.version ?? ''
+    const percent = state.progress?.percent ?? 0
+    const copy: Record<DesktopUpdateState['phase'], string> = {
+      idle: '',
+      checking: messages.updateBadgeChecking,
+      available: formatDesktopMessage(messages.updateBadgeAvailable, { version }),
+      downloading: formatDesktopMessage(messages.updateBadgeDownloading, { percent: String(percent) }),
+      installing: messages.updateBadgeInstalling,
+      ready: messages.updateBadgeReady,
+      error: messages.updateBadgeFailed,
+    }
+    const text = copy[state.phase]
+    label.textContent = text
+    if (text === '') badge.removeAttribute('data-visible')
+    else badge.setAttribute('data-visible', '')
+    badge.setAttribute('data-phase', state.phase)
+    badge.title = state.phase === 'available'
+      ? formatDesktopMessage(messages.updateBadgeAvailableHint, { version })
+      : text
+    badge.disabled = state.phase !== 'available' && state.phase !== 'error'
+    // CSSOM properties, not a style attribute: the shell documents reject inline styles.
+    progress.style.width = `${String(state.phase === 'downloading' ? percent : 0)}%`
+    glyph.setAttribute('d', state.phase === 'available'
+      ? 'M8 1.5v8.1l3-3 1.1 1.1L8 12 3.9 7.7 5 6.6l3 3V1.5zM2.5 13h11v1.5h-11z'
+      : 'M8 2.2a5.8 5.8 0 1 0 5.8 5.8h1.5A7.3 7.3 0 1 1 8 .7v1.5z')
+  }
+
+  badge.append(icon, label, progress)
+  icon.append(glyph)
+  badge.addEventListener('click', () => {
+    if (phase === 'available') void updates.install()
+    else if (phase === 'error') void updates.check()
+  })
+  updates.subscribe(render)
+  void updates.status().then(render).catch((error: unknown) => { console.error(error) })
+  return badge
 }
 
 /** Draw the DeepSeek mark in the title bar's own text color. */

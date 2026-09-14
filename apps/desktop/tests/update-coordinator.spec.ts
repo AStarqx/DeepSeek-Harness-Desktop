@@ -50,6 +50,7 @@ describe('desktop update coordinator', () => {
     const updater = {
       autoDownload: true,
       autoInstallOnAppQuit: true,
+      on: vi.fn(),
       checkForUpdates: vi.fn(async () => ({
         isUpdateAvailable: true,
         updateInfo: { version: '1.1.0' },
@@ -75,6 +76,59 @@ describe('desktop update coordinator', () => {
     expect(states.map(state => state.phase)).toEqual(['checking', 'available', 'installing', 'ready'])
   })
 
+  it('reports download progress while the release downloads', async () => {
+    const states: DesktopUpdateState[] = []
+    const listeners = new Map<string, (progress: unknown) => void>()
+    const downloadUpdate = vi.fn(async () => {
+      const listener = listeners.get('download-progress')
+      listener?.({ percent: 41.6, transferred: 100, total: 240, bytesPerSecond: 20 })
+      listener?.({ percent: 100, transferred: 240, total: 240, bytesPerSecond: 20 })
+      return []
+    })
+    const updater = {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      on: vi.fn((event: string, listener: (progress: unknown) => void) => { listeners.set(event, listener) }),
+      checkForUpdates: vi.fn(async () => ({ isUpdateAvailable: true, updateInfo: { version: '1.1.0' } })),
+      downloadUpdate,
+      quitAndInstall: vi.fn(),
+    } as unknown as AppUpdater
+    const coordinator = new DesktopUpdateCoordinator(
+      (state) => {
+        states.push(state)
+        return state
+      },
+      async () => {},
+      updater,
+      () => true,
+    )
+
+    await coordinator.check()
+    await coordinator.install()
+    expect(states.map(state => state.phase)).toEqual([
+      'checking', 'available', 'installing', 'downloading', 'downloading', 'ready',
+    ])
+    expect(states[3]?.progress).toEqual({ percent: 42, transferred: 100, total: 240, bytesPerSecond: 20 })
+    expect(states[4]?.progress).toMatchObject({ percent: 100 })
+  })
+
+  it('ignores progress reported outside a download', async () => {
+    const states: DesktopUpdateState[] = []
+    const listeners = new Map<string, (progress: unknown) => void>()
+    const updater = {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      on: vi.fn((event: string, listener: (progress: unknown) => void) => { listeners.set(event, listener) }),
+      checkForUpdates: vi.fn(async () => ({ isUpdateAvailable: false })),
+      downloadUpdate: vi.fn(async () => []),
+      quitAndInstall: vi.fn(),
+    } as unknown as AppUpdater
+    new DesktopUpdateCoordinator((state) => { states.push(state); return state }, async () => {}, updater, () => true)
+
+    listeners.get('download-progress')?.({ percent: 10, transferred: 1, total: 10, bytesPerSecond: 1 })
+    expect(states).toEqual([])
+  })
+
   it('queues install behind an in-flight check instead of returning the check result', async () => {
     const checked = Promise.withResolvers<{
       isUpdateAvailable: true
@@ -84,6 +138,7 @@ describe('desktop update coordinator', () => {
     const updater = {
       autoDownload: true,
       autoInstallOnAppQuit: true,
+      on: vi.fn(),
       checkForUpdates: vi.fn(() => checked.promise),
       downloadUpdate,
       quitAndInstall: vi.fn(),
