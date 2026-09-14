@@ -30,7 +30,7 @@ Electron 根据应用 locale 选择类型化的英文或中文桌面壳文案，
 
 ### 窗口装饰
 
-macOS 保留原生标题栏，并在系统菜单栏中渲染应用菜单。其他平台的所有窗口都设置 `titleBarStyle: 'hidden'` 与透明的 `titleBarOverlay`，因此系统仍在页面之上绘制最小化、最大化与关闭控件，同时标题文字消失，也不再渲染原生菜单栏。每个窗口的 preload 把标题栏注入自己的文档：以文档自身文字颜色绘制的 DeepSeek 标识、一个使用外壳语言包应用菜单文案的按钮、拖拽区域、为标题栏预留一行的页面偏移，以及一份[通过 CSSOM 采纳的样式表](../../.agents/notes/implemented/architecture/2026-09-11-desktop-in-window-title-bar.zh.md)，因为外壳文档的 `style-src 'self'` 策略会拒绝 `<style>` 元素和 style 属性。按下该按钮会在其下方以原生弹窗打开应用菜单——桌面插件、检查更新、退出——渲染进程同时上报标题栏实际渲染的文字颜色，作为窗口控件符号色，使主题切换后控件仍然清晰可辨。窗口图标取自仓库自有的鲸鱼标识：安装程序与可执行文件使用 `build/icon.ico`，运行中的窗口使用 `renderer/app-icon.png`。
+macOS 保留原生标题栏，并在系统菜单栏中渲染应用菜单。其他平台的所有窗口都设置 `titleBarStyle: 'hidden'` 与透明的 `titleBarOverlay`，因此系统仍在页面之上绘制最小化、最大化与关闭控件，同时标题文字消失，也不再渲染原生菜单栏。每个窗口的 preload 把标题栏注入自己的文档：以文档自身文字颜色绘制的 DeepSeek 标识、应用菜单与帮助两个按钮、拖拽区域、为标题栏预留一行的页面偏移，以及一份[通过 CSSOM 采纳的样式表](../../.agents/notes/implemented/architecture/2026-09-11-desktop-in-window-title-bar.zh.md)，因为外壳文档的 `style-src 'self'` 策略会拒绝 `<style>` 元素和 style 属性。应用菜单包含桌面插件与退出，帮助菜单包含检查更新与关于，两者都在各自按钮下方以原生弹窗打开。渲染进程同时上报标题栏自身的颜色以及文档是否为深色表面，外壳据此设置窗口控件符号色与 `nativeTheme`，使原生菜单和对话框跟随应用自身的主题。窗口图标取自仓库自有的鲸鱼标识：安装程序与可执行文件使用 `build/icon.ico`，运行中的窗口使用 `renderer/app-icon.png`。
 
 ### 运行时与插件激活
 

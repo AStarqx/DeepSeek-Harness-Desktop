@@ -8,7 +8,8 @@ const RELEASE_ENVIRONMENT = {
   DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com',
 }
 
-describe('desktop repository release channel', () => {
+// Importing the electron-builder configuration loads app-builder-lib, which is slow beside a full suite.
+describe('desktop repository release channel', { timeout: 60_000 }, () => {
   beforeAll(() => {
     for (const [name, value] of Object.entries(RELEASE_ENVIRONMENT)) vi.stubEnv(name, value)
   })

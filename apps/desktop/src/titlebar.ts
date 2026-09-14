@@ -25,14 +25,31 @@ export interface DesktopMenuAnchor {
   readonly y: number
 }
 
+/** Menus the title bar offers, each rendered by the main process as a native popup. */
+export type DesktopMenuId = 'application' | 'help'
+
+/** One request to open a title-bar menu below the button that owns it. */
+export interface DesktopMenuRequest extends DesktopMenuAnchor {
+  /** Menu the pressed button owns. */
+  readonly menu: DesktopMenuId
+}
+
+/** How the title bar reports its own colors to the shell. */
+export interface DesktopTitleBarAppearance {
+  /** Color of the window-control glyphs the system draws over the title bar. */
+  readonly symbolColor: string
+  /** Whether the document renders a dark surface, which also themes native shell menus. */
+  readonly dark: boolean
+}
+
 /** Renderer transport the injected title bar uses to reach the shell's main process. */
 export interface DesktopTitleBarTransport {
-  /** Reads the shell locale that owns the application-menu label. */
+  /** Reads the shell locale that owns the title bar's copy. */
   locale(): Promise<DesktopLocale>
-  /** Opens the application menu below the button that reported the anchor. */
-  openMenu(anchor: DesktopMenuAnchor): Promise<void>
-  /** Reports the color of the window-control glyphs the system draws over the title bar. */
-  reportSymbolColor(color: string): Promise<void>
+  /** Opens one title-bar menu below the button that reported the anchor. */
+  openMenu(request: DesktopMenuRequest): Promise<void>
+  /** Reports the title bar's own colors. */
+  reportAppearance(appearance: DesktopTitleBarAppearance): Promise<void>
   /** Reads and drives the Desktop release stream the title bar reports on. */
   readonly updates: DesktopUpdateTransport
 }
@@ -214,19 +231,36 @@ export function desktopTitleBarChrome(): BrowserWindowConstructorOptions {
 }
 
 /**
- * Validate an application-menu anchor reported by a renderer.
- * @param value - Untrusted anchor payload from the application-menu channel.
- * @returns The anchor rounded to whole content pixels.
+ * Validate one title-bar menu request reported by a renderer.
+ * @param value - Untrusted payload from the application-menu channel.
+ * @returns The menu the pressed button owns and the anchor rounded to whole content pixels.
  */
-export function desktopMenuAnchor(value: unknown): DesktopMenuAnchor {
-  const anchor = value as { readonly x?: unknown; readonly y?: unknown } | null
-  const x = anchor?.x
-  const y = anchor?.y
+export function desktopMenuRequest(value: unknown): DesktopMenuRequest {
+  const request = value as { readonly menu?: unknown; readonly x?: unknown; readonly y?: unknown } | null
+  const menu = request?.menu
+  const x = request?.x
+  const y = request?.y
+  if (menu !== 'application' && menu !== 'help') {
+    throw new Error('dsh desktop: title-bar menu must be the application or help menu')
+  }
   if (typeof x !== 'number' || typeof y !== 'number'
     || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
     throw new Error('dsh desktop: application menu anchor must be a non-negative finite point')
   }
-  return { x: Math.round(x), y: Math.round(y) }
+  return { menu, x: Math.round(x), y: Math.round(y) }
+}
+
+/**
+ * Validate the appearance a renderer reports for its own title bar.
+ * @param value - Untrusted payload from the title-bar appearance channel.
+ * @returns The window-control color and whether the document renders a dark surface.
+ */
+export function desktopTitleBarAppearance(value: unknown): DesktopTitleBarAppearance {
+  const appearance = value as { readonly symbolColor?: unknown; readonly dark?: unknown } | null
+  if (typeof appearance?.dark !== 'boolean') {
+    throw new Error('dsh desktop: title-bar appearance must report whether the surface is dark')
+  }
+  return { symbolColor: desktopSymbolColor(appearance.symbolColor), dark: appearance.dark }
 }
 
 /**
@@ -261,22 +295,62 @@ function renderTitleBar(locale: DesktopLocale, transport: DesktopTitleBarTranspo
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]
   const bar = document.createElement('div')
   bar.className = TITLE_BAR_CLASS
+  bar.append(
+    brandMark(document),
+    menuButton(document, locale.messages.application, 'application', transport),
+    menuButton(document, locale.messages.helpMenu, 'help', transport),
+    updateBadge(document, locale, transport.updates),
+  )
+  document.body.append(bar)
+  const publishAppearance = (): void => {
+    void transport.reportAppearance({
+      symbolColor: getComputedStyle(bar).color,
+      dark: rendersDarkSurface(document),
+    })
+  }
+  publishAppearance()
+  new MutationObserver(publishAppearance).observe(document.body, { attributes: true })
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', publishAppearance)
+}
+
+/** Build one title-bar menu button. */
+function menuButton(
+  document: Document,
+  label: string,
+  menu: DesktopMenuId,
+  transport: DesktopTitleBarTransport,
+): HTMLButtonElement {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = MENU_BUTTON_CLASS
-  button.textContent = locale.messages.application
+  button.textContent = label
   button.addEventListener('click', () => {
     const rect = button.getBoundingClientRect()
-    void transport.openMenu({ x: Math.round(rect.left), y: Math.round(rect.bottom) })
+    void transport.openMenu({ menu, x: Math.round(rect.left), y: Math.round(rect.bottom) })
   })
-  bar.append(brandMark(document), button, updateBadge(document, locale, transport.updates))
-  document.body.append(bar)
-  const publishSymbolColor = (): void => {
-    void transport.reportSymbolColor(getComputedStyle(bar).color)
+  return button
+}
+
+/**
+ * Report whether the document paints a dark surface.
+ *
+ * The first painted background wins: a client page themes its body, while a shell document
+ * themes the root element and leaves the body transparent.
+ * @param document - Document whose surface is measured.
+ * @returns True when the resolved background is darker than mid grey.
+ */
+function rendersDarkSurface(document: Document): boolean {
+  const backgrounds = [document.body, document.documentElement]
+  for (const element of backgrounds) {
+    const color = getComputedStyle(element).backgroundColor
+    const channels = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(color)
+    if (channels === null) continue
+    const alpha = channels[4] === undefined ? 1 : Number(channels[4])
+    if (alpha === 0) continue
+    const luminance = 0.2126 * Number(channels[1]) + 0.7152 * Number(channels[2]) + 0.0722 * Number(channels[3])
+    return luminance < 128
   }
-  publishSymbolColor()
-  new MutationObserver(publishSymbolColor).observe(document.body, { attributes: true })
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', publishSymbolColor)
+  return matchMedia('(prefers-color-scheme: dark)').matches
 }
 
 /**

@@ -96,6 +96,7 @@ const harness = await vi.hoisted(async () => {
     windows, hosts, handlers, app, FakeWindow, FakeHost, FakeUpdateCoordinator, menuPopup, menuTemplates,
     dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
     shell: { openExternal: vi.fn(() => Promise.resolve()) },
+    nativeTheme: { themeSource: 'system' },
     applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
     assertProfileRuntime: vi.fn(),
     canRecoverProfile: vi.fn(() => true),
@@ -133,6 +134,7 @@ vi.mock('electron', () => ({
       return { popup: harness.menuPopup }
     }),
   },
+  nativeTheme: harness.nativeTheme,
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
   shell: harness.shell,
 }))
@@ -482,39 +484,56 @@ describe('desktop window chrome', () => {
     })
   })
 
-  it('opens the application menu at the anchor the title bar reported', async () => {
+  it('opens the title-bar menu at the anchor the button reported', async () => {
     await import('../src/main.ts')
     await harness.preparing.promise
     const window = harness.windows[0]!
-    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, { x: 10.6, y: 36.2 })
+    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, { menu: 'help', x: 10.6, y: 36.2 })
     expect(harness.menuPopup).toHaveBeenCalledWith({ window, x: 11, y: 36 })
   })
 
-  it.each([[{ x: -1, y: 0 }], [{ x: 0 }], [undefined]])('rejects the anchor %j', async (anchor) => {
+  it.each([
+    [{ menu: 'tools', x: 0, y: 0 }],
+    [{ x: 0, y: 0 }],
+    [{ menu: 'help', x: -1, y: 0 }],
+    [{ menu: 'help', x: 0 }],
+    [undefined],
+  ])('rejects the title-bar menu request %j', async (request) => {
     await import('../src/main.ts')
     await harness.preparing.promise
-    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, anchor))
-      .toThrow(/application menu anchor/)
+    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.applicationMenuOpen, request))
+      .toThrow(/title-bar menu|application menu anchor/)
     expect(harness.menuPopup).not.toHaveBeenCalled()
   })
 
-  it.skipIf(process.platform === 'darwin')('applies the reported window-control color to its own window', async () => {
+  it.skipIf(process.platform === 'darwin')('applies the reported appearance to its own window and to native menus', async () => {
     const { DESKTOP_TITLE_BAR_OVERLAY_COLOR } = await import('../src/titlebar.ts')
     await import('../src/main.ts')
     await harness.preparing.promise
     const window = harness.windows[0]!
-    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarSymbolColor, 'rgb(237, 237, 240)')
+    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarAppearance, {
+      symbolColor: 'rgb(237, 237, 240)',
+      dark: true,
+    })
     expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
       color: DESKTOP_TITLE_BAR_OVERLAY_COLOR,
       symbolColor: 'rgb(237, 237, 240)',
     })
+    expect(harness.nativeTheme.themeSource).toBe('dark')
+    invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarAppearance, {
+      symbolColor: 'rgb(15, 17, 21)',
+      dark: false,
+    })
+    expect(harness.nativeTheme.themeSource).toBe('light')
   })
 
-  it('rejects a window-control color that is not a rendered color', async () => {
+  it('rejects an appearance that is not a rendered color', async () => {
     await import('../src/main.ts')
     await harness.preparing.promise
-    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarSymbolColor, 'javascript:alert(1)'))
-      .toThrow(/window-control color/)
+    expect(() => invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.titleBarAppearance, {
+      symbolColor: 'javascript:alert(1)',
+      dark: false,
+    })).toThrow(/window-control color/)
     expect(harness.windows[0]!.setTitleBarOverlay).not.toHaveBeenCalled()
   })
 

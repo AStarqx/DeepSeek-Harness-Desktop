@@ -3,7 +3,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { DESKTOP_IPC, type DshDesktopApi, type DesktopUpdateState } from './ipc.ts'
 import type { DesktopBackendState } from './backend-controller.ts'
-import { desktopUpdateTransport, installDesktopTitleBar, type DesktopMenuAnchor } from './titlebar.ts'
+import {
+  desktopUpdateTransport,
+  installDesktopTitleBar,
+  type DesktopMenuRequest,
+  type DesktopTitleBarAppearance,
+} from './titlebar.ts'
 
 const api: DshDesktopApi = {
   protocolVersion: 1,
@@ -41,7 +46,8 @@ contextBridge.exposeInMainWorld('dshDesktop', api)
 installDesktopTitleBar({
   platform: process.platform,
   locale: () => ipcRenderer.invoke(DESKTOP_IPC.localeGet) as ReturnType<DshDesktopApi['locale']>,
-  openMenu: (anchor: DesktopMenuAnchor) => ipcRenderer.invoke(DESKTOP_IPC.applicationMenuOpen, anchor) as Promise<void>,
-  reportSymbolColor: (color: string) => ipcRenderer.invoke(DESKTOP_IPC.titleBarSymbolColor, color) as Promise<void>,
+  openMenu: (request: DesktopMenuRequest) => ipcRenderer.invoke(DESKTOP_IPC.applicationMenuOpen, request) as Promise<void>,
+  reportAppearance: (appearance: DesktopTitleBarAppearance) =>
+    ipcRenderer.invoke(DESKTOP_IPC.titleBarAppearance, appearance) as Promise<void>,
   updates: desktopUpdateTransport(ipcRenderer),
 })

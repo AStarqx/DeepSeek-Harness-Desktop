@@ -5,9 +5,9 @@ import {
   DESKTOP_TITLE_BAR_HEIGHT,
   DESKTOP_TITLE_BAR_OVERLAY_COLOR,
   DESKTOP_TITLE_BAR_SYMBOL_COLOR,
-  desktopMenuAnchor,
+  desktopMenuRequest,
   desktopOwnsWindowChrome,
-  desktopSymbolColor,
+  desktopTitleBarAppearance,
   desktopTitleBarChrome,
   installDesktopTitleBar,
 } from '../src/titlebar.ts'
@@ -18,7 +18,7 @@ const LOCALE = resolveDesktopLocale('zh-CN')
 
 function transport(platform: NodeJS.Platform = 'win32') {
   const openMenu = vi.fn(() => Promise.resolve())
-  const reportSymbolColor = vi.fn(() => Promise.resolve())
+  const reportAppearance = vi.fn(() => Promise.resolve())
   const updates = {
     status: vi.fn(() => Promise.resolve<DesktopUpdateState>({ phase: 'idle' })),
     subscribe: vi.fn((_listener: (state: DesktopUpdateState) => void) => () => {}),
@@ -29,7 +29,7 @@ function transport(platform: NodeJS.Platform = 'win32') {
     platform,
     locale: vi.fn(() => Promise.resolve(LOCALE)),
     openMenu,
-    reportSymbolColor,
+    reportAppearance,
     updates,
   }
 }
@@ -53,15 +53,18 @@ function titleBar(): HTMLElement {
   return bar
 }
 
-function menuButton(): HTMLButtonElement {
-  const button = titleBar().querySelector<HTMLButtonElement>('button')
-  if (button === null) throw new Error('the title bar has no menu button')
+function menuButton(label: string = LOCALE.messages.application): HTMLButtonElement {
+  const button = [...titleBar().querySelectorAll<HTMLButtonElement>('.dsh-desktop-title-bar-menu')]
+    .find(candidate => candidate.textContent === label)
+  if (button === undefined) throw new Error(`the title bar has no ${label} button`)
   return button
 }
 
 beforeEach(() => {
   document.body.innerHTML = ''
   document.body.removeAttribute('data-ds-dark-theme')
+  document.body.style.background = ''
+  document.documentElement.style.background = ''
   Object.defineProperty(document, 'adoptedStyleSheets', { value: [], writable: true, configurable: true })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn() })))
 })
@@ -90,26 +93,38 @@ describe('desktop window chrome', () => {
 })
 
 describe('desktop title bar renderer reports', () => {
-  it('rounds a menu anchor to whole content pixels', () => {
-    expect(desktopMenuAnchor({ x: 12.4, y: 36.6 })).toEqual({ x: 12, y: 37 })
+  it('rounds a menu request to whole content pixels', () => {
+    expect(desktopMenuRequest({ menu: 'help', x: 12.4, y: 36.6 })).toEqual({ menu: 'help', x: 12, y: 37 })
   })
 
   it.each([
-    ['a negative coordinate', { x: -1, y: 0 }],
-    ['a missing coordinate', { x: 0 }],
-    ['a non-numeric coordinate', { x: '4', y: 0 }],
-    ['a non-finite coordinate', { x: Number.POSITIVE_INFINITY, y: 0 }],
+    ['an unknown menu', { menu: 'tools', x: 0, y: 0 }],
+    ['a missing menu', { x: 0, y: 0 }],
+    ['a negative coordinate', { menu: 'application', x: -1, y: 0 }],
+    ['a missing coordinate', { menu: 'application', x: 0 }],
+    ['a non-numeric coordinate', { menu: 'application', x: '4', y: 0 }],
+    ['a non-finite coordinate', { menu: 'application', x: Number.POSITIVE_INFINITY, y: 0 }],
     ['an absent payload', undefined],
-  ])('rejects %s', (_label, anchor) => {
-    expect(() => desktopMenuAnchor(anchor)).toThrow(/application menu anchor/)
+  ])('rejects %s', (_label, request) => {
+    expect(() => desktopMenuRequest(request)).toThrow(/title-bar menu|application menu anchor/)
   })
 
-  it.each(['rgb(237, 237, 240)', 'rgba(15, 17, 21, 0.5)', '#0f1115'])('accepts %s', (color) => {
-    expect(desktopSymbolColor(color)).toBe(color)
+  it.each([
+    { symbolColor: 'rgb(237, 237, 240)', dark: true },
+    { symbolColor: 'rgba(15, 17, 21, 0.5)', dark: false },
+    { symbolColor: '#0f1115', dark: false },
+  ])('accepts the reported appearance %j', (appearance) => {
+    expect(desktopTitleBarAppearance(appearance)).toEqual(appearance)
   })
 
-  it.each([['injected'], ['url(https://example.test/x.png)'], ['']])('rejects %j', (color) => {
-    expect(() => desktopSymbolColor(color)).toThrow(/window-control color/)
+  it.each([
+    ['a color that is not rendered', { symbolColor: 'injected', dark: false }],
+    ['a background image', { symbolColor: 'url(https://example.test/x.png)', dark: false }],
+    ['an empty color', { symbolColor: '', dark: false }],
+    ['a missing dark flag', { symbolColor: '#0f1115' }],
+    ['an absent payload', undefined],
+  ])('rejects %s', (_label, appearance) => {
+    expect(() => desktopTitleBarAppearance(appearance)).toThrow(/window-control color|surface is dark/)
   })
 })
 
@@ -151,16 +166,30 @@ describe('desktop title bar installation', () => {
       left: 6.5, right: 54, top: 0, bottom: 28.4, width: 47.5, height: 28.4, x: 6.5, y: 0, toJSON: () => ({}),
     })
     menuButton().click()
-    expect(bar.openMenu).toHaveBeenCalledWith({ x: 7, y: 28 })
+    expect(bar.openMenu).toHaveBeenCalledWith({ menu: 'application', x: 7, y: 28 })
   })
 
-  it('reports the window-control color again when the document theme changes', async () => {
+  it('offers a help menu beside the application menu', async () => {
     const bar = transport()
     installDesktopTitleBar(bar)
     await vi.waitFor(() => { expect(document.querySelector('.dsh-desktop-title-bar')).not.toBeNull() })
-    expect(bar.reportSymbolColor).toHaveBeenCalledTimes(1)
-    document.body.setAttribute('data-ds-dark-theme', '')
-    await vi.waitFor(() => { expect(bar.reportSymbolColor).toHaveBeenCalledTimes(2) })
+    expect(menuButton(LOCALE.messages.helpMenu).textContent).toBe(LOCALE.messages.helpMenu)
+    vi.spyOn(menuButton(LOCALE.messages.helpMenu), 'getBoundingClientRect').mockReturnValue({
+      left: 60, right: 110, top: 0, bottom: 28.4, width: 50, height: 28.4, x: 60, y: 0, toJSON: () => ({}),
+    })
+    menuButton(LOCALE.messages.helpMenu).click()
+    expect(bar.openMenu).toHaveBeenCalledWith({ menu: 'help', x: 60, y: 28 })
+  })
+
+  it('reports its own appearance when the document theme changes', async () => {
+    const bar = transport()
+    installDesktopTitleBar(bar)
+    await vi.waitFor(() => { expect(bar.reportAppearance).toHaveBeenCalledTimes(1) })
+    expect(bar.reportAppearance).toHaveBeenLastCalledWith(expect.objectContaining({ dark: false }))
+    document.body.style.background = '#171719'
+    await vi.waitFor(() => {
+      expect(bar.reportAppearance).toHaveBeenLastCalledWith(expect.objectContaining({ dark: true }))
+    })
   })
 
   it('reports a renderer failure instead of throwing', async () => {

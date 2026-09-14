@@ -33,12 +33,12 @@ it('exposes the plugin operations and installs the shell title bar', async () =>
   const transport = titlebar.installDesktopTitleBar.mock.calls[0]?.[0] as DesktopTitleBarTransport | undefined
   if (transport === undefined) throw new Error('the preload did not install a title bar')
   await transport.locale()
-  await transport.openMenu({ x: 1, y: 36 })
-  await transport.reportSymbolColor('rgb(0, 0, 0)')
+  await transport.openMenu({ menu: 'help', x: 1, y: 36 })
+  await transport.reportAppearance({ symbolColor: 'rgb(0, 0, 0)', dark: true })
   expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
     [DESKTOP_IPC.pluginsList],
     [DESKTOP_IPC.localeGet],
-    [DESKTOP_IPC.applicationMenuOpen, { x: 1, y: 36 }],
-    [DESKTOP_IPC.titleBarSymbolColor, 'rgb(0, 0, 0)'],
+    [DESKTOP_IPC.applicationMenuOpen, { menu: 'help', x: 1, y: 36 }],
+    [DESKTOP_IPC.titleBarAppearance, { symbolColor: 'rgb(0, 0, 0)', dark: true }],
   ])
 })

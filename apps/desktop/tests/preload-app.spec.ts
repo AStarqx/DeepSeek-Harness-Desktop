@@ -56,17 +56,17 @@ it('provides startup controls and a removable state subscription to shell docume
   expect(api).not.toHaveProperty('plugins')
 })
 
-it('gives the injected title bar the shell locale and the application-menu channels', async () => {
+it('gives the injected title bar the shell locale and the menu and appearance channels', async () => {
   vi.stubGlobal('location', new URL('dsh-app://app/index.html'))
   await import('../src/preload-app.ts')
   const transport = installedTitleBar()
   await transport.locale()
-  await transport.openMenu({ x: 12, y: 36 })
-  await transport.reportSymbolColor('rgb(237, 237, 240)')
+  await transport.openMenu({ menu: 'application', x: 12, y: 36 })
+  await transport.reportAppearance({ symbolColor: 'rgb(237, 237, 240)', dark: true })
   expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
     [DESKTOP_IPC.localeGet],
-    [DESKTOP_IPC.applicationMenuOpen, { x: 12, y: 36 }],
-    [DESKTOP_IPC.titleBarSymbolColor, 'rgb(237, 237, 240)'],
+    [DESKTOP_IPC.applicationMenuOpen, { menu: 'application', x: 12, y: 36 }],
+    [DESKTOP_IPC.titleBarAppearance, { symbolColor: 'rgb(237, 237, 240)', dark: true }],
   ])
 })
 

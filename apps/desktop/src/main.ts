@@ -10,6 +10,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeTheme,
   protocol,
   shell,
   type IpcMainInvokeEvent,
@@ -28,9 +29,9 @@ import { desktopErrorState } from './startup-error.ts'
 import { startupFailureDocument } from './startup-document.ts'
 import {
   DESKTOP_TITLE_BAR_OVERLAY_COLOR,
-  desktopMenuAnchor,
+  desktopMenuRequest,
   desktopOwnsWindowChrome,
-  desktopSymbolColor,
+  desktopTitleBarAppearance,
   desktopTitleBarChrome,
 } from './titlebar.ts'
 
@@ -510,31 +511,41 @@ async function main(): Promise<void> {
       enabled: development === undefined,
       click: openPluginWindow,
     },
+    { type: 'separator' },
+    { role: 'quit', label: messages.quit },
+  ]
+  const helpMenuItems: MenuItemConstructorOptions[] = [
     { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
     { label: messages.aboutMenu, click: () => { void showAbout() } },
-    { type: 'separator' },
-    { role: 'quit' },
   ]
-  const applicationMenu = Menu.buildFromTemplate(applicationMenuItems)
-  // macOS keeps the application menu in the system menu bar. Other platforms show it from the
-  // window's own title bar, where a native menu bar would occupy a second chrome row.
+  const titleBarMenus = {
+    application: Menu.buildFromTemplate(applicationMenuItems),
+    help: Menu.buildFromTemplate(helpMenuItems),
+  }
+  // macOS keeps both menus in the system menu bar. Other platforms show them from the window's own
+  // title bar, where a native menu bar would occupy a second chrome row.
   Menu.setApplicationMenu(ownsWindowChrome
     ? null
-    : Menu.buildFromTemplate([{ label: app.name, submenu: applicationMenuItems }]))
+    : Menu.buildFromTemplate([
+      { label: app.name, submenu: applicationMenuItems },
+      { role: 'help', submenu: helpMenuItems },
+    ]))
 
-  ipcMain.handle(DESKTOP_IPC.applicationMenuOpen, (event, anchor: unknown) => {
+  ipcMain.handle(DESKTOP_IPC.applicationMenuOpen, (event, payload: unknown) => {
     assertDesktopSender(event, ['shell', 'app'])
     const window = BrowserWindow.fromWebContents(event.sender)
     if (window === null) throw new Error('dsh desktop: application menu requires an owned window')
-    const position = desktopMenuAnchor(anchor)
-    applicationMenu.popup({ window, x: position.x, y: position.y })
+    const request = desktopMenuRequest(payload)
+    titleBarMenus[request.menu].popup({ window, x: request.x, y: request.y })
   })
-  ipcMain.handle(DESKTOP_IPC.titleBarSymbolColor, (event, color: unknown) => {
+  ipcMain.handle(DESKTOP_IPC.titleBarAppearance, (event, payload: unknown) => {
     assertDesktopSender(event, ['shell', 'app'])
-    const symbolColor = desktopSymbolColor(color)
+    const appearance = desktopTitleBarAppearance(payload)
+    // Native menus and dialogs follow the theme the application itself renders.
+    nativeTheme.themeSource = appearance.dark ? 'dark' : 'light'
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!ownsWindowChrome || window === null) return
-    window.setTitleBarOverlay({ color: DESKTOP_TITLE_BAR_OVERLAY_COLOR, symbolColor })
+    window.setTitleBarOverlay({ color: DESKTOP_TITLE_BAR_OVERLAY_COLOR, symbolColor: appearance.symbolColor })
   })
 
   const createMainWindow = (): BrowserWindow => {

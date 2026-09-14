@@ -17,7 +17,7 @@ export const DESKTOP_IPC = {
   backendRetry: 'dsh-desktop:backend-retry',
   applicationRestart: 'dsh-desktop:application-restart',
   applicationMenuOpen: 'dsh-desktop:application-menu-open',
-  titleBarSymbolColor: 'dsh-desktop:title-bar-symbol-color',
+  titleBarAppearance: 'dsh-desktop:title-bar-appearance',
   configurationReset: 'dsh-desktop:configuration-reset',
   backendState: 'dsh-desktop:backend-state',
   updatesStatus: 'dsh-desktop:updates-status',
