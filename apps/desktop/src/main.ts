@@ -11,10 +11,12 @@ import {
   ipcMain,
   Menu,
   protocol,
+  shell,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
+import { DESKTOP_PROJECT_URL, DESKTOP_UPSTREAM_URL } from './about.ts'
 import { DesktopProjectManager, type DesktopProjectHooks } from './project-manager.ts'
 import { DesktopHostProcess } from './host-process.ts'
 import { DesktopBackendController, type DesktopBackendState } from './backend-controller.ts'
@@ -455,6 +457,27 @@ async function main(): Promise<void> {
     void pluginWindow.loadURL(`${SCHEME}://shell/plugin-manager.html`)
   }
 
+  const showAbout = async (): Promise<void> => {
+    const options = {
+      type: 'info' as const,
+      title: messages.aboutTitle,
+      message: `${messages.aboutTitle} ${app.getVersion()}`,
+      detail: formatDesktopMessage(messages.aboutDetail, {
+        project: DESKTOP_PROJECT_URL,
+        upstream: DESKTOP_UPSTREAM_URL,
+      }),
+      buttons: [messages.aboutOpenProject, messages.aboutClose],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }
+    const owner = BrowserWindow.getFocusedWindow()
+    const result = owner === null
+      ? await dialog.showMessageBox(options)
+      : await dialog.showMessageBox(owner, options)
+    if (result.response === 0) await shell.openExternal(DESKTOP_PROJECT_URL)
+  }
+
   const applicationMenuItems: MenuItemConstructorOptions[] = [
     {
       label: development === undefined ? messages.pluginsMenu : messages.pluginsMenuPackagedOnly,
@@ -463,6 +486,7 @@ async function main(): Promise<void> {
       click: openPluginWindow,
     },
     { label: messages.checkUpdatesMenu, click: () => { void checkAndPrompt(true) } },
+    { label: messages.aboutMenu, click: () => { void showAbout() } },
     { type: 'separator' },
     { role: 'quit' },
   ]

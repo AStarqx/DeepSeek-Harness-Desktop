@@ -14,6 +14,7 @@ const harness = await vi.hoisted(async () => {
   const hosts: FakeHost[] = []
   const handlers = new Map<string, (event: { senderFrame: { url: string } }, payload?: unknown) => unknown>()
   const menuPopup = vi.fn()
+  const menuTemplates: unknown[][] = []
   let pluginsEnabled = false
   let preparing = deferred()
   let prepared = deferred()
@@ -50,6 +51,7 @@ const harness = await vi.hoisted(async () => {
     }
     static getAllWindows() { return windows.filter(window => !window.destroyed) }
     static fromWebContents() { return windows.find(window => !window.destroyed) ?? null }
+    static getFocusedWindow() { return windows.find(window => !window.destroyed) ?? null }
     close() { this.destroyed = true; this.emit('closed') }
   }
   class FakeHost {
@@ -81,8 +83,9 @@ const harness = await vi.hoisted(async () => {
     }),
   })
   return {
-    windows, hosts, handlers, app, FakeWindow, FakeHost, menuPopup,
+    windows, hosts, handlers, app, FakeWindow, FakeHost, menuPopup, menuTemplates,
     dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
+    shell: { openExternal: vi.fn(() => Promise.resolve()) },
     applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
     assertProfileRuntime: vi.fn(),
     canRecoverProfile: vi.fn(() => true),
@@ -94,6 +97,7 @@ const harness = await vi.hoisted(async () => {
     set pluginsEnabled(value: boolean) { pluginsEnabled = value },
     reset() {
       windows.length = 0; hosts.length = 0; handlers.clear(); app.removeAllListeners()
+      menuTemplates.length = 0
       app.isPackaged = true
       pluginsEnabled = false
       preparing = deferred(); prepared = deferred(); hostStarted = deferred()
@@ -111,8 +115,15 @@ vi.mock('electron', () => ({
       harness.handlers.set(channel, handler)
     },
   },
-  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn(() => ({ popup: harness.menuPopup })) },
+  Menu: {
+    setApplicationMenu: vi.fn(),
+    buildFromTemplate: vi.fn((template: unknown[]) => {
+      harness.menuTemplates.push(template)
+      return { popup: harness.menuPopup }
+    }),
+  },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+  shell: harness.shell,
 }))
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: 'desktop-test-profile' }) }))
 vi.mock('../src/project-manager.ts', () => ({
@@ -141,6 +152,32 @@ function invokeFrom(url: string, channel: string, payload?: unknown): unknown {
   const handler = harness.handlers.get(channel)
   if (handler === undefined) throw new Error(`missing handler ${channel}`)
   return handler({ senderFrame: { url } }, payload)
+}
+
+/** Find one application-menu item by its localized label, descending into the macOS wrapper menu. */
+function menuItem(label: string): { click?: () => void } {
+  const search = (items: unknown[]): { click?: () => void } | undefined => {
+    for (const entry of items as Array<{ label?: string; submenu?: unknown[]; click?: () => void }>) {
+      if (entry.label === label && entry.click !== undefined) return entry
+      if (Array.isArray(entry.submenu)) {
+        const found = search(entry.submenu)
+        if (found !== undefined) return found
+      }
+    }
+    return undefined
+  }
+  for (const template of harness.menuTemplates) {
+    const found = search(template)
+    if (found !== undefined) return found
+  }
+  throw new Error(`the application menu has no item labeled ${label}`)
+}
+
+/** Read the options of the most recent message box, with or without an owner window. */
+function lastMessageBoxOptions(): Record<string, unknown> {
+  const call = harness.dialog.showMessageBox.mock.calls.at(-1)
+  if (call === undefined) throw new Error('no message box was shown')
+  return (call.length === 2 ? call[1] : call[0]) as Record<string, unknown>
 }
 
 beforeEach(() => {
@@ -446,5 +483,40 @@ describe('desktop window chrome', () => {
     await harness.preparing.promise
     expect(invokeFrom('dsh-app://app/index.html', DESKTOP_IPC.localeGet)).toMatchObject({ id: 'en' })
     expect(() => invokeFrom('dsh-app://third-party/index.html', DESKTOP_IPC.localeGet)).toThrow(/unowned renderer/)
+  })
+
+  it('introduces the application and opens its project page from the About item', async () => {
+    const { DESKTOP_PROJECT_URL, DESKTOP_UPSTREAM_URL } = await import('../src/about.ts')
+    const { resolveDesktopLocale } = await import('../src/locale.ts')
+    const messages = resolveDesktopLocale('en-US').messages
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const about = menuItem(messages.aboutMenu)
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    about.click?.()
+    await vi.waitFor(() => { expect(harness.shell.openExternal).toHaveBeenCalledWith(DESKTOP_PROJECT_URL) })
+    expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(lastMessageBoxOptions()).toMatchObject({
+      title: messages.aboutTitle,
+      message: `${messages.aboutTitle} ${harness.app.getVersion()}`,
+      buttons: [messages.aboutOpenProject, messages.aboutClose],
+      cancelId: 1,
+    })
+    const detail = String(lastMessageBoxOptions().detail)
+    expect(detail).toContain(DESKTOP_PROJECT_URL)
+    expect(detail).toContain(DESKTOP_UPSTREAM_URL)
+  })
+
+  it('closes the About dialog without opening a browser page', async () => {
+    const { resolveDesktopLocale } = await import('../src/locale.ts')
+    const messages = resolveDesktopLocale('en-US').messages
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    const about = menuItem(messages.aboutMenu)
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    about.click?.()
+    await vi.waitFor(() => { expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(1) })
+    await Promise.resolve()
+    expect(harness.shell.openExternal).not.toHaveBeenCalled()
   })
 })
